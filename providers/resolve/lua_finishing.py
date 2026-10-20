@@ -10,6 +10,7 @@ from typing import Any
 from agent.media import MediaPolicy
 from providers.resolve.lua_camera_visibility import validate_camera_visibility
 from providers.resolve.lua_editing import bounded_text
+from providers.resolve.lua_native_audio import validate_native_audio
 from providers.resolve.lua_privacy import validate_privacy, validate_privacy_batch
 from providers.resolve.lua_ripple import validate_batch, validate_ripple, validate_span
 
@@ -29,6 +30,8 @@ PROPERTY_LIMITS = {
 def validate_finishing(
     action: str, a: dict[str, Any], roots: list[Path]
 ) -> dict[str, Any]:
+    if action == "set_clip_properties" and "native_audio" in a:
+        return validate_native_audio(a)
     if (
         action in {"get_timeline_summary", "set_clip_properties"}
         and "ripple_batch" in a
@@ -66,6 +69,12 @@ def validate_finishing(
             raise ValueError("Expected one safe render job ID.")
         return dict(a)
     name = bounded_text(a.get("timeline_name"), "Timeline name")
+    if action == "set_clip_properties" and "open_page" in a:
+        if set(a) != {"timeline_name", "open_page"} or a["open_page"] not in {
+            "edit", "fairlight"
+        }:
+            raise ValueError("Choose the Edit or Fairlight page.")
+        return dict(a, timeline_name=name)
     if action == "get_timeline_summary" and a.get("inspect_camera_visibility") is True:
         base = dict(a)
         del base["inspect_camera_visibility"]
@@ -167,7 +176,9 @@ def validate_finishing(
             if type(frame) is not int or not 0 <= frame <= 10_000_000:
                 raise ValueError("Invalid preview frame.")
             return {
-                "timeline_name": name, "preview_start": True, "preview_frame": frame
+                "timeline_name": name,
+                "preview_start": True,
+                "preview_frame": frame,
             }
         return {"timeline_name": name, "preview_start": True}
     if action == "get_timeline_summary" and set(a) == {

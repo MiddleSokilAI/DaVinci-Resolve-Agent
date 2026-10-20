@@ -39,7 +39,8 @@ def test_native_preview_seek_and_start(frame: int | None, expected: str) -> None
           GetCurrentTimecode=function() return current end}
         project={SetCurrentTimeline=function(_,t) active=t; return true end,
           GetCurrentTimeline=function() return active end}
-        api={OpenPage=function(_,p) page=p; return true end}
+        api={OpenPage=function(_,p) page=p; return true end,
+          GetCurrentPage=function() return page end}
         helpers={check=function(v,e) if not v then error(e) end end,
           timelines=function() return timeline end}
     """)

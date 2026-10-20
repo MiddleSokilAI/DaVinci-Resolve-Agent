@@ -149,6 +149,22 @@ return function(api, root, helpers, shared)
         end
         local timeline = timelines(project, a.timeline_name)
         check(timeline ~= nil, "TIMELINE_NOT_FOUND")
+        if action == "set_clip_properties" and a.native_audio then
+            if a.native_audio.operation=="phrase_pilot" or a.native_audio.operation=="phrase_batch" then
+                return dofile(root.."/audio_pilot.lua")(api,helpers)(project,timeline,a.native_audio)
+            end
+            return dofile(root.."/native_audio.lua")(api,helpers)(project,timeline,a.native_audio)
+        end
+        if action == "set_clip_properties" and a.open_page then
+            check(a.open_page == "edit" or a.open_page == "fairlight", "INVALID_ARGUMENTS")
+            local id = timeline:GetUniqueId()
+            return function()
+                check(project:SetCurrentTimeline(timeline) == true, "TIMELINE_SELECT_FAILED")
+                check(project:GetCurrentTimeline():GetUniqueId() == id, "TIMELINE_CHANGED")
+                check(api:OpenPage(a.open_page) == true, "PAGE_OPEN_FAILED")
+                check(api:GetCurrentPage() == a.open_page, "PAGE_READBACK_FAILED")
+            end
+        end
         if action=="set_clip_properties" and a.replacement_take_path then
             local item=(timeline:GetItemListInTrack("video",a.track_index) or {})[a.item_index]
             check(item and item:GetMediaPoolItem()
@@ -216,7 +232,8 @@ return function(api, root, helpers, shared)
                 check(api:OpenPage("edit")==true, "VERIFY_FAILED")
                 check(timeline:SetCurrentTimecode(target)==true, "VERIFY_FAILED")
                 check(project:GetCurrentTimeline():GetUniqueId()==timeline:GetUniqueId()
-                    and timeline:GetCurrentTimecode()==target, "VERIFY_FAILED")
+                    and timeline:GetCurrentTimecode()==target
+                    and api:GetCurrentPage()=="edit", "VERIFY_FAILED")
             end
         end
         if action == "set_clip_properties" and a.circle_mask then

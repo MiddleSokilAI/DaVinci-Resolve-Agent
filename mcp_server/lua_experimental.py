@@ -131,6 +131,49 @@ def create_server(root: Path) -> MCPServer:
         )
 
     @server.tool(annotations=write)
+    async def resolve_lua_native_audio(
+        timeline_name: str,
+        native_audio: dict[str, Any],
+        expected_project_id: str,
+        idempotency_key: str,
+        confirm: bool = False,
+        timeout_seconds: float = 120,
+    ) -> dict[str, Any]:
+        """Run guarded native normalization, phrase batches, or audio probes.
+
+        Use a checkpoint copy. Normalization requires exact audio item bounds
+        and a mode returned by Resolve; presets must already exist uniquely.
+        Voice-isolation state acceptance does not prove effective suppression.
+        Cleanup operations accept only an exact muted, unprocessed failed batch.
+        Native success and layout readback do not prove perceptual audio balance.
+        A render/listening QA pass remains required, especially for mixed speech.
+        """
+        result = await asyncio.to_thread(
+            client.request, "set_clip_properties", timeout_seconds,
+            arguments={"timeline_name": timeline_name, "native_audio": native_audio},
+            expected_project_id=expected_project_id, confirm=confirm,
+            idempotency_key=idempotency_key,
+        )
+        return dict(result, audio_qa="pending")
+
+    @server.tool(annotations=write)
+    async def resolve_lua_open_audio_page(
+        timeline_name: str,
+        page: str,
+        expected_project_id: str,
+        idempotency_key: str,
+        confirm: bool = False,
+        timeout_seconds: float = 60,
+    ) -> dict[str, Any]:
+        """Select an exact timeline and open Edit or Fairlight with native readback."""
+        return await asyncio.to_thread(
+            client.request, "set_clip_properties", timeout_seconds,
+            arguments={"timeline_name": timeline_name, "open_page": page},
+            expected_project_id=expected_project_id, confirm=confirm,
+            idempotency_key=idempotency_key,
+        )
+
+    @server.tool(annotations=write)
     async def resolve_lua_duplicate_timeline(
         source_timeline_name: str,
         name: str,

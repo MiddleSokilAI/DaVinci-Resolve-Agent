@@ -68,21 +68,26 @@ return function(api, root, media_roots, shared)
     end
     -- Separate identity from layout: a duplicate must preserve the layout
     -- while owning different editable timeline items. No source is cleared.
-    local function layout(timeline)
+    local function layout(timeline,project)
+        -- Track enable getters return false for inactive timelines on 21.1.
+        check(project:SetCurrentTimeline(timeline)==true,"TIMELINE_SELECT_FAILED")
         local parts, ids, count = {tostring(timeline:GetSetting("timelineFrameRate")),
             tostring(timeline:GetStartFrame()),tostring(timeline:GetEndFrame())}, {}, 0
         for _,kind in ipairs({"video","audio","subtitle"}) do
             parts[#parts+1]=kind .. ":" .. timeline:GetTrackCount(kind)
             for track=1,timeline:GetTrackCount(kind) do
+                parts[#parts+1]=tostring(timeline:GetIsTrackEnabled(kind,track))
                 for _,item in ipairs(timeline:GetItemListInTrack(kind,track) or {}) do
                     count=count+1
-                    check(count<=1000,"TIMELINE_TOO_LARGE")
+                    check(count<=10000,"TIMELINE_TOO_LARGE")
                     ids[item:GetUniqueId()]=true
                     local media=item:GetMediaPoolItem()
                     parts[#parts+1]=table.concat({kind,track,item:GetStart(),item:GetEnd(),
                         item:GetSourceStartFrame(),item:GetSourceEndFrame(),
                         media and media:GetUniqueId() or "no-media",
-                        #(item:GetLinkedItems() or {}),item:GetFusionCompCount()},":")
+                        #(item:GetLinkedItems() or {}),item:GetFusionCompCount(),
+                        tostring(item:GetClipEnabled()),
+                        kind=="audio" and tostring(item:GetProperty("AudioVolume")) or ""},":")
                 end
             end
         end
@@ -111,7 +116,7 @@ return function(api, root, media_roots, shared)
                 duplicate_source=timelines(project,a.source_timeline_name)
                 check(duplicate_source~=nil,"TIMELINE_NOT_FOUND")
                 check(type(duplicate_source.DuplicateTimeline)=="function","DUPLICATE_UNAVAILABLE")
-                source_layout,source_ids=layout(duplicate_source)
+                source_layout,source_ids=layout(duplicate_source,project)
             else
                 check(a.source_timeline_name==nil,"INVALID_ARGUMENTS")
             end
@@ -164,12 +169,13 @@ return function(api, root, media_roots, shared)
             check(timelines(project, a.name):GetUniqueId() == timeline:GetUniqueId(), "VERIFY_FAILED")
             if duplicate_source then
                 check(timeline:GetUniqueId()~=duplicate_source:GetUniqueId(),"VERIFY_FAILED")
-                local copied,copied_ids=layout(timeline)
-                local original,original_ids=layout(duplicate_source)
+                local copied,copied_ids=layout(timeline,project)
+                local original,original_ids=layout(duplicate_source,project)
                 check(copied==source_layout and original==source_layout,"VERIFY_FAILED")
                 for id in pairs(copied_ids) do check(not source_ids[id],"VERIFY_FAILED") end
                 for id in pairs(source_ids) do check(original_ids[id],"VERIFY_FAILED") end
                 for id in pairs(original_ids) do check(source_ids[id],"VERIFY_FAILED") end
+                check(project:SetCurrentTimeline(timeline)==true,"TIMELINE_SELECT_FAILED")
             end
         elseif request.action == "import_media" then
             local imported = pool:ImportMedia(a.paths)

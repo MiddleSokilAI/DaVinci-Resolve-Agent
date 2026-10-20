@@ -82,6 +82,69 @@ media paths, повні command arguments або diagnostics bundles без по
 
 ## Поточне покриття
 
+### Native audio normalization and noise probe — 2026-10-20
+
+- Environment: Windows 10 Education, version 10.0.19045, build 19045;
+  Python 3.12.10; agent 0.1.0; experimental Lua snapshot bridge, protocol 4.
+  Live API reported product `DaVinci Resolve`, version `21.1.0.17`; Free
+  edition is operator-confirmed, not inferred from a successful effect setter.
+- Initial state: saved project open, populated 60 fps review timeline.
+  Original media and prior timelines retained; work performed on checkpoint
+  copies with exact project identity guards. No final-film render authorized.
+- Transport: `LuaSnapshotClient.request("set_clip_properties", ...)` with
+  validated `native_audio` payloads, `confirm=true`, project ID and distinct
+  idempotency keys. This records native bridge acceptance, not a fresh
+  end-to-end MCP stdio test of the newly added convenience tools.
+- Write evidence: eight bounded `phrase_batch` requests returned `completed`
+  with before/after DRP exports and native readback. Receipts reported
+  `replayed=false`; a repeat-write replay was not exercised in this run.
+  An earlier failed pilot was inspected and reconciled before exact guarded
+  cleanup; no blind retry with a fresh key.
+- Readback: 157 original audio clips preserved on disabled A1; enabled A2
+  contains 2,413 native source-reference regions, including 1,041 normalized
+  speech regions. Source time, bounds, gains and routing were checked;
+  314 video items and three inspected privacy masks were unchanged.
+  The 1,128 measured quiet regions retained unity gain. No replacement PCM
+  or external DSP was imported.
+- Final balanced-timeline readback recorded at
+  **2026-10-20T15:43:53Z** (local evidence file timestamp):
+  Edit page, expected checkpoint identity, original full timeline bounds.
+  Native normalization/layout/routing: `verified` for this run.
+- Five short native before/after render pairs completed and decoded:
+  four 18-second passages and one 23.433-second passage. Measured sample lag
+  was zero at 48 kHz; sampled RGB frames were identical. After-processing
+  4x peak estimates ranged from -8.30 to -6.10 dBFS. The two
+  transcript-inferred speaker passages differed by 0.26 LU, versus 3.06 LU
+  before treatment. These are representative output measurements, not
+  a whole-film render, speaker recognition or subjective listening approval.
+- Noise probe, separate copy: native Voice Isolation track state changed to
+  enabled/20 and read back successfully. A ten-second native render reached
+  `complete` at **2026-10-20T16:19:03Z** (status evidence timestamp), with
+  decoded video/audio and duration 10.005333 seconds. Measured background RMS
+  changed by **0.0 dB**; background spectral measurements were identical.
+  Speech difference was -0.0035 LU, with zero measured sample lag.
+  Useful noise suppression: **`pending`, not demonstrated**. Setter acceptance
+  does not establish effect processing or license availability.
+- Recovery readback at **2026-10-20T16:23:39Z**: balanced checkpoint selected,
+  Edit page, A1 disabled/A2 enabled. Cursor restoration returned
+  `VERIFY_FAILED`; subsequent independent readback confirmed the correct
+  timeline/page but a different cursor position. It was not blindly replayed.
+- Fairlight preset enumeration was empty. Direct documented Noise Reduction
+  controls were not found in the inspected API. UI effect setup was `blocked`
+  by screenshot/activation timeouts; this is not proof that the stock effect
+  or all noise reduction is unavailable. Listening QA remains `pending`.
+- Sanitized evidence above was extracted from private local receipts,
+  native readbacks and decoded QA reports. Raw DRPs, project identifiers,
+  media paths, preference exports and recordings are intentionally not
+  included in the repository.
+
+The inactive-timeline routing issue was observed during duplication:
+`GetIsTrackEnabled` returned false until that timeline was selected.
+Audio preflight now selects and verifies its target before routing reads;
+simulation regressions cover inactive getters and selection failures.
+The generalized selection fix still needs a fresh live pass for every exported
+operation; the completed normalization run is not blanket compatibility evidence.
+
 - Resolve 21 Free 21.0.3.7, Windows 10 build 19045, Python 3.12.10,
   project open, timeline present: `verified`;
 - Codex project-scoped MCP → `video_agent_status` →

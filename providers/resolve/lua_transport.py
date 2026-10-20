@@ -83,6 +83,14 @@ def prepare(root: Path, media_roots: list[Path] | None = None) -> Path:
         editing.with_name("ResolveLuaFinishing.lua").read_text(encoding="utf-8"),
         encoding="utf-8",
     )
+    (root / "native_audio.lua").write_text(
+        editing.with_name("ResolveLuaNativeAudio.lua").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (root / "audio_pilot.lua").write_text(
+        editing.with_name("ResolveLuaAudioPilot.lua").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
     (root / "sync.lua").write_text(
         editing.with_name("ResolveLuaSync.lua").read_text(encoding="utf-8"),
         encoding="utf-8",
@@ -190,7 +198,10 @@ class LuaSnapshotClient:
         batch_write = (
             action == "set_clip_properties"
             and isinstance(arguments, dict)
-            and "ripple_batch" in arguments
+            and ("ripple_batch" in arguments or (
+                isinstance(arguments.get("native_audio"), dict)
+                and arguments["native_audio"].get("operation") == "phrase_batch"
+            ))
         )
         maximum_timeout = 600 if batch_write else 120
         if (
@@ -365,6 +376,19 @@ class LuaSnapshotClient:
                             "JOB_NOT_OWNED",
                             "JOB_ALREADY_STARTED",
                             "JOB_CHANGED",
+                            "PILOT_REQUIRES_ONE_AUDIO_TRACK",
+                            "SOURCE_AUDIO_DISABLED",
+                            "PILOT_ITEM_CHANGED",
+                            "SOURCE_AUDIO_NOT_UNITY",
+                            "SOURCE_FPS_UNSUPPORTED",
+                            "SOURCE_FADES_UNAVAILABLE",
+                            "NORMALIZATION_UNAVAILABLE",
+                            "NORMALIZATION_MODE_UNAVAILABLE",
+                            "NORMALIZATION_CONSTANT_UNAVAILABLE",
+                            "AUDIO_ITEM_CHANGED",
+                            "AUDIO_ITEM_DISABLED",
+                            "FAIRLIGHT_PRESET_MISSING_OR_AMBIGUOUS",
+                            "INVALID_AUDIO_OPERATION",
                         }:
                             receipt.reject(code)
                         raise BridgeProtocolError(
