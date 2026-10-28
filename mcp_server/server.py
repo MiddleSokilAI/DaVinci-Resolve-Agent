@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
+from pathlib import Path
 from typing import Any
 
 from mcp.server import MCPServer
@@ -1475,6 +1477,21 @@ def create_server(application: AgentApplication | None = None) -> MCPServer:
 
 def main() -> None:
     """Run the local MCP server over stdio."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--backend", choices=("python", "free-marker"), default="python"
+    )
+    parser.add_argument("--runtime", type=Path)
+    args = parser.parse_args()
+    if args.backend == "free-marker":
+        if args.runtime is None:
+            parser.error("--backend free-marker requires --runtime")
+        from mcp_server.free_marker import run
+
+        run(args.runtime)
+        return
+    if args.runtime is not None:
+        parser.error("--runtime is only supported with --backend free-marker")
     create_server().run()
 
 

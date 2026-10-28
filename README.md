@@ -4,45 +4,73 @@ DaVinci Resolve Agent — це розширюваний локальний фр�
 відеоредакторів. Перший провайдер працює з DaVinci Resolve 21 Free у Windows,
 але ядро не залежить від конкретного редактора.
 
-**Resolve Free 21.1:** запуск Python-мосту в перевіреній версії 21.1.0.17
-недоступний. Є окремий [експериментальний Lua MCP-міст](docs/lua-experimental.md):
-імпорт, монтаж, гучність, масштаб, SRT і короткий рендер MP4 перевірено наживо.
-Субтитри додаються перед відео. П’ятихвилинний рендер перевірено: міст окремо
-підтверджує прийняття завдання та готовий файл; відсоток прогресу поки недоступний.
-Фонові запити працюють із закритою консоллю. Міст не замінює весь основний MCP-сервер.
+**Resolve Free:** реалізовано opt-in backend
+[`free-marker`](docs/free-mcp-backend.md) для основного MCP entrypoint. Він
+передає типізовані команди self-contained Lua-скрипту з меню Scripts і не
+потребує `dofile`, `loadfile` чи виконання переданого коду. Offline-тести
+Python/Lua 5.1 з native API doubles проходять. У Windows Free **21.1.2.10**
+наживо перевірено MCP reads, guarded write з backup/readback та reconnect із
+idempotent replay. Точний обсяг перевірки й решта acceptance cases наведені в
+[manual matrix](docs/manual-integration-testing.md#free-marker-mcp-backend--2026-10-29).
+
+Історичний [експериментальний Lua MCP-міст](docs/lua-experimental.md) у Windows
+Free **21.1.0.17** підтвердив імпорт, монтаж, гучність, масштаб, SRT і рендер MP4.
+Ці результати не переносяться автоматично на новий backend або іншу версію
+Resolve. Основний Python backend залишається типовим маршрутом без змін.
 
 ## Підключення MCP та межі підтримки
 
-Основний MCP і експериментальний Lua MCP мають різні транспорти:
-
 | Маршрут | Сервер | Умова роботи |
 |---|---|---|
-| Основний | `davinci-agent-mcp` → `mcp_server.server` | Запущений Python `ResolveBridge`, filesystem queue і його capabilities |
-| Експериментальний Lua | `python -m mcp_server.lua_experimental --runtime <session>` | Підготовлений runtime та запущений resident Lua-міст; окремий набір tools |
-| One-shot console | [Compatibility PR #1](https://github.com/Seiger/DaVinci-Resolve-Agent/pull/1) | Одна вручну передана команда; поки не підключений до MCP entrypoint і не забезпечує автономне з'єднання |
-| Кандидат `experimental_free_marker` | [План Free backend](docs/free-mcp-backend.md) | Наживо підтверджений finite marker round-trip; production MCP backend ще не реалізований |
+| Основний Python | `davinci-agent-mcp` або `--backend python` | Запущений Python `ResolveBridge`, filesystem queue і його capabilities |
+| Free marker, opt-in | `davinci-agent-mcp --backend free-marker --runtime ABSOLUTE_PATH` | Новий marker runtime та одноразовий запуск його self-contained скрипту через меню Scripts; обмежені live read/write/reconnect cases перевірено |
+| Експериментальний Lua | `python -m mcp_server.lua_experimental --runtime ABSOLUTE_PATH` | Сумісне середовище з уже запущеним файловим resident Lua-мостом; окремий набір tools |
+| One-shot console | [Compatibility PR #1](https://github.com/Seiger/DaVinci-Resolve-Agent/pull/1) | Одна вручну передана команда; окремий compatibility маршрут без автономного MCP-з'єднання |
 
-Історичні результати resident Lua-мосту у вступі стосуються Windows Free **21.1.0.17**.
-У консолі Windows Free **21.1.2.10** спостерігали `dofile=nil` і
-`loadfile=nil`; старий файловий bootstrap тут не працює. Одноразові console
-запити підтвердили читання project, створення timeline й відкриття Fairlight.
-Окремий probe через меню Scripts виконався, але також підтвердив
-`dofile=nil`, `loadfile=nil` і `SavePrefs=nil`; штатний `ExportProject` працював.
-Тому запуск старого файлового мосту через меню тут не є робочим рішенням.
-Водночас self-contained скрипт із меню підтвердив обмежений native round-trip:
-після `ready` зовнішній клієнт створив marker, Lua виявив його через
-`bmd.fileexists` і повернув correlated `.drp`, який перевірено штатним parser.
-Без file loader, виконання payload-коду чи змін проєкту. Це доказ придатного
-примітиву для [кандидата Free backend](docs/free-mcp-backend.md), а не готовий
-MCP transport: потрібні schema, nonce/expiry/integrity, receipts і наскрізні
-тести. Підтримка залишається прив'язаною до перевіреної Windows Free 21.1.2.10;
-див. [manual matrix](docs/manual-integration-testing.md).
+У консолі й меню Scripts Windows Free **21.1.2.10** спостерігали `dofile=nil`
+і `loadfile=nil`; у menu probe також `SavePrefs=nil`, а штатний `ExportProject`
+працював. Тому старий файловий bootstrap не є робочим рішенням для цієї
+інсталяції. Новий marker backend вбудовує фіксовані модулі в один menu script,
+читає лише bounded JSON-дані через `bmd.fileexists` і повертає correlated
+нативні `.drp` responses. Підтвердження зв'язку вимагає свіжої відповіді Resolve.
 
-Вбудована інтеграція Blackmagic з AI assistants — окремий маршрут Studio:
-див. [офіційний анонс 21.1](https://www.blackmagicdesign.com/media/release/20260908-03)
-та встановлений *DaVinci Resolve 21.1 Reference Manual*, розділ
-*Using DaVinci Resolve with AI Assistants*, с. 4318 (`File > Setup AI Assistants`).
-Її доступність у Free та робота цього пакета через неї не заявляються.
+Підготуй **новий, ще не створений** runtime та встанови його menu script:
+
+```powershell
+Set-Location 'C:/path/DaVinci-Resolve-Agent'
+& 'C:/path/DaVinci-Resolve-Agent/.venv/Scripts/python.exe' `
+    -m mcp_server.free_marker `
+    --runtime 'C:/path/runtime/marker-session-001' `
+    --prepare --install-script
+```
+
+З відкритим збереженим проєктом запусти **Workspace > Scripts > Utility > Resolve
+Agent Marker** один раз; у деяких меню `Utility` опущено. Підтримується саме
+запуск із меню. MCP не запускає Resolve або скрипт автоматично; Fusion
+`Execute` і console bootstrap для цього backend не використовуються.
+
+Сервер запускає реальний MCP-клієнт за конфігом нижче. Еквівалентна команда для
+stdio-клієнта:
+
+```powershell
+& 'C:/path/DaVinci-Resolve-Agent/.venv/Scripts/davinci-agent-mcp.exe' `
+    --backend free-marker --runtime 'C:/path/runtime/marker-session-001'
+```
+
+Lease за замовчуванням становить **600 секунд** і поновлюється, поки MCP працює;
+для явного підтвердженого stop є `resolve_lua_stop`. Після виходу native loop
+runtime вважається consumed: підготуй нову папку, встанови новий menu script і
+зміни runtime в конфігу. Повторний запуск старого runtime заборонено. Після
+таймауту write використай лише той самий tool, exact arguments та idempotency
+key для отримання початкового ACK без повторної публікації команди.
+`resolve_free_pending_requests` показує локальні pending receipts і lifecycle
+exports. Порядок reconnect/recovery описано в
+[Free backend](docs/free-mcp-backend.md).
+
+Backend використовує наявні типізовані `resolve_lua_*` tools; він не замінює
+весь набір Python MCP. JSON envelope обмежено **4096 UTF-8 байтами**. Нативні
+project exports мають витрати часу й диска; довільний Lua endpoint, передача
+коду та `reload_modules` не надаються.
 
 ### Codex: user scope або конкретний проєкт
 
@@ -50,29 +78,14 @@ MCP transport: потрібні schema, nonce/expiry/integrity, receipts і на
 сервер автоматично для іншої робочої папки чи checkout.
 За [офіційною документацією Codex MCP](https://learn.chatgpt.com/docs/extend/mcp?surface=cli),
 для user scope використовуй `~/.codex/config.toml`; для project scope —
-`.codex/config.toml` потрібного проєкту. Обери маршрут і заміни абсолютні
-paths у відповідному прикладі на власні. Поле `cwd` задає робочу директорію.
-
-Основний сервер, якщо Python-міст доступний у встановленій версії Resolve:
+`.codex/config.toml` потрібного проєкту. Заміни абсолютні paths у прикладі на
+власні. `command`, `cwd` та `--runtime` повинні відповідати підготовленій
+інсталяції. Не запускай другий stdio server для того самого runtime паралельно.
 
 ```toml
-[mcp_servers.davinci-resolve-agent]
+[mcp_servers.davinci-resolve-free]
 command = 'C:/path/DaVinci-Resolve-Agent/.venv/Scripts/davinci-agent-mcp.exe'
-cwd = 'C:/path/DaVinci-Resolve-Agent'
-startup_timeout_sec = 20
-tool_timeout_sec = 330
-default_tools_approval_mode = "writes"
-required = false
-```
-
-Окремий Lua-сервер для сумісного середовища з уже запущеним resident сеансом.
-Це експериментальний приклад; на поточній Windows Free 21.1.2.10 такий
-автономний сеанс не підтверджений:
-
-```toml
-[mcp_servers.davinci-resolve-lua-experimental]
-command = 'C:/path/DaVinci-Resolve-Agent/.venv/Scripts/python.exe'
-args = ["-m", "mcp_server.lua_experimental", "--runtime", "C:/path/prepared-session"]
+args = ["--backend", "free-marker", "--runtime", "C:/path/runtime/marker-session-001"]
 cwd = 'C:/path/DaVinci-Resolve-Agent'
 startup_timeout_sec = 20
 tool_timeout_sec = 150
@@ -80,16 +93,28 @@ default_tools_approval_mode = "writes"
 required = false
 ```
 
-Сам конфіг не запускає внутрішній міст. Перевір MCP `initialize`/`tools/list`,
-потім свіжий `resolve_get_project` або `resolve_lua_get_project` відповідного
-маршруту. `video_agent_status` читає кеш Python heartbeat: перевір його вік;
-цей кеш не описує окремий Lua-сеанс. Успішний stdio handshake також не є
-доказом зв'язку з Resolve. Окремі CI виправлення відстежуються в [PR #2](https://github.com/Seiger/DaVinci-Resolve-Agent/pull/2).
+Для основного Python backend використовуй той самий absolute executable і
+`cwd` без marker arguments; для сумісного resident Lua-маршруту є
+[окрема документація](docs/lua-experimental.md). Сам конфіг не запускає
+внутрішній міст. Перевір MCP `initialize`/`tools/list`, потім
+`resolve_free_connection_status` для свіжого native round-trip або
+`resolve_lua_get_project`. `video_agent_status` читає кеш Python heartbeat;
+він не описує marker-сеанс. Успішний stdio handshake або lease самі по собі
+не доводять зв'язку з Resolve.
 
 **Fairlight:** цей пакет поки не підтримує вибір фізичного input device,
 patch input, record arm і перевірене вимкнення track/bus EQ, Dynamics та
-всіх effects. Підготовлена монодоріжка або успішна команда MCP не означає
-готовність до запису; для цих кроків потрібне окреме керування інтерфейсом.
+всіх effects. Для цих app settings потрібне окреме перевірене керування GUI;
+підготовлена монодоріжка чи успішна команда MCP не означає готовність до запису.
+Додатковий [capture diagnostic](scripts/capture-resolve-window.ps1) потребує
+явної згоди оператора на UIA/GDI capture і лише знімає визначене вікно Resolve;
+це не публічний MCP UI tool і не загальний спосіб керування застосунком.
+
+Вбудована інтеграція Blackmagic з AI assistants — окремий маршрут Studio:
+див. [офіційний анонс 21.1](https://www.blackmagicdesign.com/media/release/20260908-03)
+та встановлений *DaVinci Resolve 21.1 Reference Manual*, розділ
+*Using DaVinci Resolve with AI Assistants*, с. 4318 (`File > Setup AI Assistants`).
+Її доступність у Free та робота цього пакета через неї не заявляються.
 
 Канонічна межа v1 та послідовність наступних етапів зафіксовані в
 [roadmap](docs/roadmap.md).
