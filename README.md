@@ -20,17 +20,23 @@ DaVinci Resolve Agent — це розширюваний локальний фр�
 | Основний | `davinci-agent-mcp` → `mcp_server.server` | Запущений Python `ResolveBridge`, filesystem queue і його capabilities |
 | Експериментальний Lua | `python -m mcp_server.lua_experimental --runtime <session>` | Підготовлений runtime та запущений resident Lua-міст; окремий набір tools |
 | One-shot console | [Compatibility PR #1](https://github.com/Seiger/DaVinci-Resolve-Agent/pull/1) | Одна вручну передана команда; поки не підключений до MCP entrypoint і не забезпечує автономне з'єднання |
+| Кандидат `experimental_free_marker` | [План Free backend](docs/free-mcp-backend.md) | Наживо підтверджений finite marker round-trip; production MCP backend ще не реалізований |
 
-Результати вище стосуються перевіреної Windows Free **21.1.0.17**.
+Історичні результати resident Lua-мосту у вступі стосуються Windows Free **21.1.0.17**.
 У консолі Windows Free **21.1.2.10** спостерігали `dofile=nil` і
 `loadfile=nil`; старий файловий bootstrap тут не працює. Одноразові console
 запити підтвердили читання project, створення timeline й відкриття Fairlight.
 Окремий probe через меню Scripts виконався, але також підтвердив
 `dofile=nil`, `loadfile=nil` і `SavePrefs=nil`; штатний `ExportProject` працював.
 Тому запуск старого файлового мосту через меню тут не є робочим рішенням.
-Для автономного Free-маршруту ще потрібен сумісний data transport або окремо
-пакетований і перевірений UI executor. Наявність Lua API чи відкритого вікна
-не підтверджує resident transport. Деталі — [manual matrix](docs/manual-integration-testing.md).
+Водночас self-contained скрипт із меню підтвердив обмежений native round-trip:
+після `ready` зовнішній клієнт створив marker, Lua виявив його через
+`bmd.fileexists` і повернув correlated `.drp`, який перевірено штатним parser.
+Без file loader, виконання payload-коду чи змін проєкту. Це доказ придатного
+примітиву для [кандидата Free backend](docs/free-mcp-backend.md), а не готовий
+MCP transport: потрібні schema, nonce/expiry/integrity, receipts і наскрізні
+тести. Підтримка залишається прив'язаною до перевіреної Windows Free 21.1.2.10;
+див. [manual matrix](docs/manual-integration-testing.md).
 
 Вбудована інтеграція Blackmagic з AI assistants — окремий маршрут Studio:
 див. [офіційний анонс 21.1](https://www.blackmagicdesign.com/media/release/20260908-03)

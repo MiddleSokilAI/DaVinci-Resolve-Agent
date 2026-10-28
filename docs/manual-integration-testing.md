@@ -82,6 +82,30 @@ media paths, повні command arguments або diagnostics bundles без по
 
 ## Поточне покриття
 
+### Finite Free marker transport probe — 2026-10-29
+
+- Environment: Windows 10 Education, version 10.0.19045, build 19045;
+  host Python 3.12.10; agent/parser 0.1.0. Resolve reported 21.1.2.10;
+  Free edition is operator-confirmed. The self-contained finite menu probe
+  is not an assigned production backend/protocol version.
+- Initial state: the expected saved project was open. The known-marker check
+  was true, the absent-nonce check false, and `bmd.wait` was available.
+- Read-only sequence: native `ready.drp` was exported at
+  `2026-10-28T22:47:30Z`; the external host then published the fixed nonce
+  trigger at `2026-10-28T22:47:52Z`. Native Lua detected it through
+  `bmd.fileexists` and exported its correlated acknowledgement at
+  `2026-10-28T22:47:52Z`. The existing bounded `read_project_snapshot`
+  parser accepted the archive and matched the expected project UUID.
+  Private project identifiers and runtime paths are intentionally omitted.
+- Result: `verified` for this single fixed-signal native round trip. The loop
+  exited through its finite return path. No project/audio changes, recording,
+  preferences write, dynamic payload evaluation or write replay occurred;
+  mutation backup/confirmation/replay are not applicable to this read-only probe.
+- `pending`: typed payload transfer, MCP stdio end-to-end integration,
+  persistent backend, reconnect/lease/stop, write receipts/readback/replay and
+  UI responsiveness. Existing `dofile`/`loadfile`/`SavePrefs` restrictions
+  are unchanged. See the [candidate plan](free-mcp-backend.md).
+
 ### Native audio normalization and noise probe — 2026-10-20
 
 - Environment: Windows 10 Education, version 10.0.19045, build 19045;
