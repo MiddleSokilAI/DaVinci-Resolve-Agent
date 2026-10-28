@@ -11,6 +11,81 @@ DaVinci Resolve Agent — це розширюваний локальний фр�
 підтверджує прийняття завдання та готовий файл; відсоток прогресу поки недоступний.
 Фонові запити працюють із закритою консоллю. Міст не замінює весь основний MCP-сервер.
 
+
+## Підключення MCP та межі підтримки
+
+Основний MCP і експериментальний Lua MCP мають різні транспорти:
+
+| Маршрут | Сервер | Умова роботи |
+|---|---|---|
+| Основний | `davinci-agent-mcp` → `mcp_server.server` | Запущений Python `ResolveBridge`, filesystem queue і його capabilities |
+| Експериментальний Lua | `python -m mcp_server.lua_experimental --runtime <session>` | Підготовлений runtime та запущений resident Lua-міст; окремий набір tools |
+| One-shot console | [Compatibility PR #1](https://github.com/Seiger/DaVinci-Resolve-Agent/pull/1) | Одна вручну передана команда; поки не підключений до MCP entrypoint і не забезпечує автономне з'єднання |
+
+Результати вище стосуються перевіреної Windows Free **21.1.0.17**.
+У консолі Windows Free **21.1.2.10** спостерігали `dofile=nil` і
+`loadfile=nil`; старий файловий bootstrap тут не працює. Одноразові console
+запити підтвердили читання project, створення timeline й відкриття Fairlight.
+Окремий probe через меню Scripts виконався, але також підтвердив
+`dofile=nil`, `loadfile=nil` і `SavePrefs=nil`; штатний `ExportProject` працював.
+Тому запуск старого файлового мосту через меню тут не є робочим рішенням.
+Для автономного Free-маршруту ще потрібен сумісний data transport або окремо
+пакетований і перевірений UI executor. Наявність Lua API чи відкритого вікна
+не підтверджує resident transport. Деталі — [manual matrix](docs/manual-integration-testing.md).
+
+Вбудована інтеграція Blackmagic з AI assistants — окремий маршрут Studio:
+див. [офіційний анонс 21.1](https://www.blackmagicdesign.com/media/release/20260908-03)
+та встановлений *DaVinci Resolve 21.1 Reference Manual*, розділ
+*Using DaVinci Resolve with AI Assistants*, с. 4318 (`File > Setup AI Assistants`).
+Її доступність у Free та робота цього пакета через неї не заявляються.
+
+### Codex: user scope або конкретний проєкт
+
+Репозиторний `.codex/config.toml` діє у довіреному проєкті; він не реєструє
+сервер автоматично для окремого `G:/Videos` чи іншого checkout.
+За [офіційною документацією Codex MCP](https://learn.chatgpt.com/docs/extend/mcp?surface=cli),
+для user scope використовуй `~/.codex/config.toml`; для project scope —
+`.codex/config.toml` потрібного проєкту. Обери маршрут і заміни абсолютні
+paths у відповідному прикладі на власні. Поле `cwd` задає робочу директорію.
+
+Основний сервер, якщо Python-міст доступний у встановленій версії Resolve:
+
+```toml
+[mcp_servers.davinci-resolve-agent]
+command = 'C:/path/DaVinci-Resolve-Agent/.venv/Scripts/davinci-agent-mcp.exe'
+cwd = 'C:/path/DaVinci-Resolve-Agent'
+startup_timeout_sec = 20
+tool_timeout_sec = 330
+default_tools_approval_mode = "writes"
+required = false
+```
+
+Окремий Lua-сервер для сумісного середовища з уже запущеним resident сеансом.
+Це експериментальний приклад; на поточній Windows Free 21.1.2.10 такий
+автономний сеанс не підтверджений:
+
+```toml
+[mcp_servers.davinci-resolve-lua-experimental]
+command = 'C:/path/DaVinci-Resolve-Agent/.venv/Scripts/python.exe'
+args = ["-m", "mcp_server.lua_experimental", "--runtime", "C:/path/prepared-session"]
+cwd = 'C:/path/DaVinci-Resolve-Agent'
+startup_timeout_sec = 20
+tool_timeout_sec = 150
+default_tools_approval_mode = "writes"
+required = false
+```
+
+Сам конфіг не запускає внутрішній міст. Перевір MCP `initialize`/`tools/list`,
+потім свіжий `resolve_get_project` або `resolve_lua_get_project` відповідного
+маршруту. `video_agent_status` читає кеш Python heartbeat: перевір його вік;
+цей кеш не описує окремий Lua-сеанс. Успішний stdio handshake також не є
+доказом зв'язку з Resolve. Окремі CI виправлення відстежуються в [PR #2](https://github.com/Seiger/DaVinci-Resolve-Agent/pull/2).
+
+**Fairlight:** цей пакет поки не підтримує вибір фізичного input device,
+patch input, record arm і перевірене вимкнення track/bus EQ, Dynamics та
+всіх effects. Підготовлена монодоріжка або успішна команда MCP не означає
+готовність до запису; для цих кроків потрібне окреме керування інтерфейсом.
+
 Канонічна межа v1 та послідовність наступних етапів зафіксовані в
 [roadmap](docs/roadmap.md).
 Окремий опис M47 наведено в
