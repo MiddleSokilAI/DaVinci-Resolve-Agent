@@ -217,6 +217,24 @@ def _clear_recorded(
         _remove_owned(path, root, owner)
 
 
+def _clear_with_retry(
+    root: Path,
+    session: str,
+    identity: str,
+    expected_owner: dict[str, Any] | None = None,
+) -> None:
+    for attempt in range(6):
+        try:
+            _clear_recorded(root, session, identity, expected_owner)
+            return
+        except PermissionError:
+            # Windows can briefly retain a handle after stat/unlink. Recheck
+            # exact ownership on every retry; never hide a persistent failure.
+            if attempt == 5:
+                raise
+            time.sleep(0.025 * 2**attempt)
+
+
 def _stage_bits(root: Path, name: str, packet: bytes, owner: dict[str, Any]) -> Path:
     stage = root / name
     stage.mkdir(exist_ok=False)
@@ -351,12 +369,14 @@ class MarkerSlot:
     def clear(self) -> None:
         """Release this request after acknowledgement or a safe read timeout."""
         if self.published:
-            _clear_recorded(self.root, self.owner["session"], self.identity, self.owner)
+            _clear_with_retry(
+                self.root, self.owner["session"], self.identity, self.owner
+            )
 
     @staticmethod
     def clear_completed(root: Path, session: str, identity: str) -> None:
         """Retry only original owned cleanup after a durable completed receipt."""
-        _clear_recorded(root.resolve(), session, identity)
+        _clear_with_retry(root.resolve(), session, identity)
 
 
 def publish_lease(root: Path) -> int:

@@ -325,16 +325,14 @@ def test_completed_replay_retries_only_owned_partial_cleanup(
     snapshot(root / f"{original.identity}.before.drp")
     snapshot(root / f"{original.identity}.ok.drp")
     unlink = Path.unlink
-    denied = False
+    denied = True
 
     def deny_one_bit(path: Path, *args: Any, **kwargs: Any) -> None:
-        nonlocal denied
         if (
             path.parent.name.startswith(".inbox-retired-")
             and path.name.endswith(".bit")
-            and not denied
+            and denied
         ):
-            denied = True
             raise PermissionError("temporary Windows file lock")
         unlink(path, *args, **kwargs)
 
@@ -345,6 +343,7 @@ def test_completed_replay_retries_only_owned_partial_cleanup(
     assert not (root / "inbox").exists()
     assert (retired / ".owner.json").is_file()
     assert inspect_pending(root)["pending_receipts"] == []
+    denied = False
     assert client.request("create_timeline", 1, **arguments)["replayed"] is True
     assert not retired.exists()
     newer = MarkerSlot(root, request(root), 4096)
@@ -428,12 +427,10 @@ def test_orphaned_read_after_cleanup_failure_recovers_without_republication(
     if acknowledged:
         snapshot(root / f"{old.identity}.drp")
     rename = Path.rename
-    failed = False
+    blocked = True
 
     def sharing_failure(path: Path, target: Path) -> Path:
-        nonlocal failed
-        if path.name == "inbox" and not failed:
-            failed = True
+        if path.name == "inbox" and blocked:
             raise PermissionError("temporary directory sharing violation")
         return rename(path, target)
 
@@ -441,6 +438,7 @@ def test_orphaned_read_after_cleanup_failure_recovers_without_republication(
     with pytest.raises(PermissionError):
         old.clear()
     assert (root / "inbox").exists()
+    blocked = False
     publish = MarkerSlot.publish
     published: list[str] = []
 
@@ -491,3 +489,44 @@ def test_unacknowledged_unexpired_read_is_not_reclaimed(tmp_path: Path) -> None:
     with pytest.raises(MarkerSlotBusyError):
         LuaSnapshotClient(root).request("ping", 5)
     assert slot_request(root).identity == slot.identity
+
+
+def test_verified_native_success_survives_transient_retired_directory_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "session"
+    prepare_marker(root)
+    publish = MarkerSlot.publish
+    rmdir = Path.rmdir
+    published: list[str] = []
+    failed = False
+
+    def native_write(slot: MarkerSlot, deadline: float) -> None:
+        publish(slot, deadline)
+        published.append(slot.identity)
+        snapshot(root / f"{slot.identity}.before.drp")
+        snapshot(root / f"{slot.identity}.ok.drp")
+
+    def sharing_failure(path: Path) -> None:
+        nonlocal failed
+        if path.name.startswith(".inbox-retired-") and not failed:
+            failed = True
+            raise PermissionError("temporary Windows directory handle")
+        rmdir(path)
+
+    monkeypatch.setattr(MarkerSlot, "publish", native_write)
+    monkeypatch.setattr(Path, "rmdir", sharing_failure)
+    result = LuaSnapshotClient(root).request(
+        "create_timeline",
+        30,
+        arguments={"name": "Verified once"},
+        expected_project_id="project-id",
+        confirm=True,
+        idempotency_key="once",
+    )
+    assert result["status"] == "completed"
+    assert failed and len(published) == 1
+    assert inspect_pending(root)["pending_receipts"] == []
+    assert not (root / "inbox").exists()
+    assert not list(root.glob(".inbox-retired-*"))
