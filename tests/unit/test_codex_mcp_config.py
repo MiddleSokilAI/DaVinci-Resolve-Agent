@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
+import sysconfig
 from pathlib import Path
 from typing import Any, cast
 
@@ -40,9 +42,14 @@ def test_codex_mcp_config_is_portable_and_safe_by_default() -> None:
     assert server["tool_timeout_sec"] > 300
 
 
-def test_codex_mcp_config_starts_the_installed_stdio_server() -> None:
+def test_codex_mcp_entry_point_starts_the_installed_stdio_server() -> None:
     server = _load_server_config()
-    executable = (REPOSITORY_ROOT / server["command"]).resolve()
+    # The portable project template uses a developer .venv, while CI may install
+    # into the selected base interpreter. Test the same installed entry point.
+    entry_point = Path(server["command"]).name
+    if os.name != "nt":
+        entry_point = Path(entry_point).stem
+    executable = Path(sysconfig.get_path("scripts")) / entry_point
     assert executable.is_file()
 
     async def initialize_server() -> set[str]:
