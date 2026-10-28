@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-import sys
+import sysconfig
 from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters
@@ -15,7 +15,7 @@ def test_installed_mcp_server_supports_stdio_handshake() -> None:
     executable_name = (
         "davinci-agent-mcp.exe" if os.name == "nt" else "davinci-agent-mcp"
     )
-    executable = Path(sys.executable).parent / executable_name
+    executable = Path(sysconfig.get_path("scripts")) / executable_name
     assert executable.is_file()
 
     async def list_tool_names() -> set[str]:
