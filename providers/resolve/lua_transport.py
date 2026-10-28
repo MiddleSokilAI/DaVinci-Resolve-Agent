@@ -19,6 +19,7 @@ from uuid import uuid4
 from xml.etree import ElementTree as ET
 
 from agent.client import BridgeProtocolError, CommandTimeoutError
+from providers.resolve.lua_compat import with_loader
 from providers.resolve.lua_editing import (
     WRITE_ACTIONS,
     WriteReceipt,
@@ -127,6 +128,11 @@ def prepare(root: Path, media_roots: list[Path] | None = None) -> Path:
         encoding="utf-8",
     )
     (root / "request.lua").write_text("return nil\n", encoding="ascii")
+    for script in root.glob("*.lua"):
+        if script.name != "request.lua":
+            script.write_text(
+                with_loader(script.read_text(encoding="utf-8")), encoding="utf-8"
+            )
     return root / "bridge.lua"
 
 
