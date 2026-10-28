@@ -14,6 +14,7 @@ import subprocess
 from pathlib import Path
 from uuid import uuid4
 
+from providers.resolve.lua_compat import with_loader
 from providers.resolve.lua_editing import atomic_json
 from providers.resolve.lua_transport import lua_string, prepare
 
@@ -69,12 +70,12 @@ def stage(
     }.items():
         worker = worker.replace(f'"{key}"', lua_string(value))
     worker = worker.replace("__READY_TIMEOUT__", str(ready_timeout_seconds))
-    (root / "startup.lua").write_text(worker, encoding="utf-8")
-    command = (
+    (root / "startup.lua").write_text(with_loader(worker), encoding="utf-8")
+    command = with_loader(
         "_G.ResolveAgentStartupContext=" + lua_string(metadata["session"]) + "; "
         "dofile(" + lua_string((root / "startup.lua").as_posix()) + ")"
     )
-    hook = HOOK_HEADER + (
+    hook = HOOK_HEADER + with_loader(
         "local ok, err = pcall(function()\n"
         "  if _G.ResolveAgentStartupQueued then return end\n"
         "  local app = assert(fusion or fu, 'Fusion context unavailable')\n"
