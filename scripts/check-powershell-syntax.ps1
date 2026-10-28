@@ -47,7 +47,7 @@ try {
     }
 
     Write-Host (
-        "PowerShell syntax OK: parsed $($scriptFiles.Count) installer scripts."
+        "PowerShell syntax OK: parsed $($scriptFiles.Count) scripts."
     )
     exit 0
 } catch {

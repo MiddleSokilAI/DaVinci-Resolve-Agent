@@ -75,6 +75,9 @@ jobs:
       - name: Parse installer PowerShell scripts
         run: .\scripts\check-powershell-syntax.ps1
 
+      - name: Parse utility PowerShell scripts without executing them
+        run: .\scripts\check-powershell-syntax.ps1 -ScriptsPath .\scripts
+
   wheel-package:
     name: Wheel package
     runs-on: windows-latest

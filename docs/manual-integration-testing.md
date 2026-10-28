@@ -82,6 +82,40 @@ media paths, повні command arguments або diagnostics bundles без по
 
 ## Поточне покриття
 
+### Free marker MCP backend — 2026-10-29
+
+- Environment: Windows 10 Education 10.0.19045, host Python 3.12.10,
+  Resolve Free 21.1.2.10; agent 0.1.0, native protocol 4, marker wire 1.
+  The self-contained managed script was launched from Workspace > Scripts.
+  Disk loaders, preference transport and a Lua compiler were not required.
+- The installed `davinci-agent-mcp --backend free-marker --runtime <session>`
+  completed real MCP stdio `initialize`/`tools/list` with 36 typed tools.
+  Fresh native status, project identity and timeline summary matched the
+  operator's already-open saved project and expected timeline; all video,
+  audio and subtitle item counts were zero. Private names, IDs, paths and
+  project exports remain local and are not included in this repository.
+- Measured native reads: status 1.734 s, project 1.469 s, timeline summary
+  1.531 s. A guarded operation selected the same timeline and opened Fairlight
+  in 3.593 s, with a unique `.before.drp` backup, matching project identity,
+  native state readback and a completed durable receipt. No recording,
+  microphone setting, processing change or media edit was performed.
+- After the MCP subprocess exited, a new MCP subprocess reconnected to the
+  same still-running native session. Repeating the exact operation/key
+  returned the existing verified result in 0.015 s with the same backup and
+  response paths; fresh native status then passed in 1.313 s.
+- The Workspace menu could still be opened through UI Automation and captured
+  while the native loop remained leased. This is a bounded UI responsiveness
+  check, not comprehensive Fusion/editor acceptance.
+- Result: `verified` for these native read/write/replay/reconnect cases.
+  Malformed packets, lease expiry, stop, lost acknowledgements and failure
+  recovery have Lua/API-double and host fault-injection coverage; actual
+  Resolve process death/restart, exhaustive editor compatibility and all
+  advertised operation families remain separate acceptance work.
+- Physical input/patch/arm and track/bus EQ/Dynamics/inserts are not native
+  backend API capabilities. Their current GUI setup is a separate operator
+  task and is not inferred from MCP connectivity. See [backend setup and
+  limits](free-mcp-backend.md).
+
 ### Finite Free marker transport probe — 2026-10-29
 
 - Environment: Windows 10 Education, version 10.0.19045, build 19045;

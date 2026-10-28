@@ -10,15 +10,23 @@ from typing import Any
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
+from agent import __version__
 from providers.resolve.lua_cleanup import cleanup_responses
 from providers.resolve.lua_transport import LuaSnapshotClient, prepare
 
 
-def create_server(root: Path) -> MCPServer:
+def create_server(
+    root: Path,
+    *,
+    name: str = "davinci-resolve-lua-experimental",
+    instructions: str | None = None,
+    excluded_tools: frozenset[str] = frozenset(),
+) -> MCPServer:
     client = LuaSnapshotClient(root)
     server = MCPServer(
-        name="davinci-resolve-lua-experimental",
-        instructions=(
+        name=name,
+        version=__version__,
+        instructions=instructions or (
             "Experimental Lua snapshot bridge. Requires a saved open "
             "project and a manually bootstrapped bridge (no session expiry). "
             "Requests run without mouse or keyboard input. Each request exports "
@@ -858,6 +866,8 @@ def create_server(root: Path) -> MCPServer:
             client.request, "reload_modules", timeout_seconds
         )
 
+    for tool_name in excluded_tools:
+        server.remove_tool(tool_name)
     return server
 
 

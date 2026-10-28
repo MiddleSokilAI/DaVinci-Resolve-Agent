@@ -13,6 +13,7 @@ import os
 import re
 import time
 import zipfile
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -33,13 +34,30 @@ from providers.resolve.lua_finishing import (
     validate_finishing,
     verify_video,
 )
+from providers.resolve.marker_transport import (
+    MarkerSlot,
+    MarkerTransportError,
+    publish_lease,
+    validate_marker_metadata,
+)
 
 
 class LuaCommandTimeoutError(CommandTimeoutError):
     """A missing prototype response, without suggesting the Python bridge."""
 
-    def __init__(self, command_id: str, timeout_seconds: float) -> None:
+    def __init__(
+        self, command_id: str, timeout_seconds: float, *, marker: bool = False
+    ) -> None:
         super().__init__(command_id, timeout_seconds)
+        if marker:
+            self.args = (
+                "No fresh native marker response within the timeout. Check this "
+                "session's Scripts-menu marker-bridge.lua, native exit exports, "
+                "lease and occupied inbox. A host lease is not native liveness. "
+                "For an uncertain write, repeat only the same arguments/key to "
+                "inspect its original acknowledgement without resubmitting.",
+            )
+            return
         self.args = (
             "No experimental Lua response within the timeout. Open a saved "
             "project and start this session's bridge.lua in the Lua console; "
@@ -168,10 +186,52 @@ class LuaSnapshotClient:
         metadata = json.loads((self.root / "session.json").read_text(encoding="utf-8"))
         self.session = metadata["session"]
         self.protocol = metadata.get("protocol", 1)
+        self.transport = metadata.get("transport", "lua")
+        self.max_payload_bytes = metadata.get("max_payload_bytes", 4096)
+        if self.transport == "marker":
+            validate_marker_metadata(metadata)
+        elif self.transport != "lua":
+            raise ValueError("Unsupported Lua session transport.")
         self.capabilities = metadata.get("capabilities", [])
         self.media_roots = [Path(p) for p in metadata.get("media_roots", [])]
         if not isinstance(self.session, str) or len(self.session) != 32:
             raise ValueError("Invalid Lua session.")
+
+    def _recover_marker_read_slot(self) -> None:
+        """With client.lock held, release only a decoded acknowledged/expired read."""
+        inbox = self.root / "inbox"
+        if not inbox.exists() and not inbox.is_symlink():
+            return
+        slot = MarkerSlot.occupied(self.root, self.session, self.max_payload_bytes)
+        if slot.request["action"] not in {
+            "ping",
+            "get_current_project",
+            "get_timeline_summary",
+            "get_render_status",
+        }:
+            return  # All writes, stop and unknown actions remain fail-closed.
+        expired = math.floor(time.time()) > slot.request["expires"]
+        candidates = [self.root / f"{slot.identity}.drp"]
+        if slot.request["action"] in {"get_timeline_summary", "get_render_status"}:
+            candidates = list(self.root.glob(f"{slot.identity}.ok_*.drp"))
+            candidates += list(self.root.glob(f"{slot.identity}.error_*.drp"))
+        acknowledged = False
+        for candidate in candidates:
+            try:
+                read_project_snapshot(candidate)
+                acknowledged = True
+                break
+            except (
+                OSError,
+                BridgeProtocolError,
+                zipfile.BadZipFile,
+                EOFError,
+                KeyError,
+                ET.ParseError,
+            ):
+                continue  # Partial/corrupt archives do not establish an ACK.
+        if acknowledged or expired:
+            slot.clear()
 
     def request(
         self,
@@ -183,7 +243,12 @@ class LuaSnapshotClient:
         confirm: bool = False,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
-        if (self.root / "stopped.json").exists():
+        recovery_allowed = (
+            self.transport == "marker"
+            and action in WRITE_ACTIONS | FINISH_ACTIONS
+            and bool(idempotency_key)
+        )
+        if (self.root / "stopped.json").exists() and not recovery_allowed:
             raise ValueError(
                 "Session is stopped. Prepare a new runtime before restarting."
             )
@@ -201,13 +266,20 @@ class LuaSnapshotClient:
             | FINISH_ACTIONS
         ):
             raise ValueError("Unsupported experimental Lua action.")
+        if action == "reload_modules" and self.transport == "marker":
+            raise ValueError(
+                "Marker modules are embedded; prepare a new session to reload."
+            )
         batch_write = (
             action == "set_clip_properties"
             and isinstance(arguments, dict)
-            and ("ripple_batch" in arguments or (
-                isinstance(arguments.get("native_audio"), dict)
-                and arguments["native_audio"].get("operation") == "phrase_batch"
-            ))
+            and (
+                "ripple_batch" in arguments
+                or (
+                    isinstance(arguments.get("native_audio"), dict)
+                    and arguments["native_audio"].get("operation") == "phrase_batch"
+                )
+            )
         )
         maximum_timeout = 600 if batch_write else 120
         if (
@@ -288,13 +360,73 @@ class LuaSnapshotClient:
             f"{command_id}.ok.drp" if write else f"{command_id}.drp"
         )
         pending = self.root / f"{command_id}.tmp"
+        marker_slot: MarkerSlot | None = None
+        acknowledged = False
+        resuming = False
         try:
-            if (self.root / "stopped.json").exists():
-                raise ValueError("Session is stopped. Prepare a new runtime.")
             if receipt:
-                replay = receipt.replay()
-                if replay is not None:
-                    return replay
+                if self.transport == "marker" and receipt.path.exists():
+                    saved = json.loads(receipt.path.read_text(encoding="utf-8"))
+                    if saved.get("fingerprint") != receipt.fingerprint:
+                        raise ValueError(
+                            "Idempotency key was already used for different arguments."
+                        )
+                    if saved.get("status") == "pending":
+                        command_id = saved.get("command_id", "")
+                        if not isinstance(command_id, str) or not re.fullmatch(
+                            "[0-9a-f]{32}", command_id
+                        ):
+                            raise BridgeProtocolError(
+                                "Pending receipt command ID is invalid."
+                            )
+                        receipt.value = saved
+                        response = self.root / f"{command_id}.ok.drp"
+                        resuming = True
+                        if (self.root / "inbox").exists():
+                            marker_slot = MarkerSlot.existing(
+                                self.root,
+                                self.session,
+                                command_id,
+                                self.max_payload_bytes,
+                            )
+                            expected = dict(
+                                marker_slot.request,
+                                action=action,
+                                confirm=True,
+                                project_id=expected_project_id,
+                                arguments=normalized,
+                            )
+                            if marker_slot.request != expected:
+                                raise BridgeProtocolError(
+                                    "Pending packet differs from the requested write."
+                                )
+                if not resuming:
+                    replay = receipt.replay()
+                    if replay is not None:
+                        if self.transport == "marker":
+                            MarkerSlot.clear_completed(
+                                self.root, self.session, receipt.value["command_id"]
+                            )
+                        return replay
+            if (self.root / "stopped.json").exists() and not resuming:
+                raise ValueError("Session is stopped. Prepare a new runtime.")
+            expires = math.ceil(time.time() + timeout_seconds)
+            if self.transport == "marker" and not resuming:
+                self._recover_marker_read_slot()
+                expires = math.ceil(time.time() + timeout_seconds)
+                envelope: dict[str, Any] = dict(
+                    session=self.session, id=command_id, action=action, expires=expires
+                )
+                if write or detail_request:
+                    envelope.update(
+                        project_id=expected_project_id, arguments=normalized
+                    )
+                if write:
+                    envelope["confirm"] = True
+                # Bound deterministic data errors before creating a pending receipt.
+                marker_slot = MarkerSlot(self.root, envelope, self.max_payload_bytes)
+                marker_slot.ensure_available()
+            if receipt and not resuming:
                 if action == "start_render":
                     assert owned_job is not None
                     destination = Path(owned_job["output_path"])
@@ -303,9 +435,8 @@ class LuaSnapshotClient:
                             "Render destination is no longer empty; refusing overwrite."
                         )
                 receipt.begin(command_id)
-            if action == "prepare_render":
+            if action == "prepare_render" and not resuming:
                 (self.root / "renders" / command_id).mkdir(parents=True, exist_ok=False)
-            expires = math.ceil(time.time() + timeout_seconds)
             payload = (
                 "return {session="
                 + lua_string(self.session)
@@ -324,18 +455,26 @@ class LuaSnapshotClient:
                 )
                 + "}\n"
             )
-            pending.write_text(payload, encoding="ascii")
             deadline = time.monotonic() + timeout_seconds
-            while True:
-                try:
-                    pending.replace(self.root / "request.lua")
-                    break
-                except PermissionError:
-                    # Windows readers may briefly deny delete/rename sharing.
-                    # Retry publication of the SAME ID, never a new operation.
-                    if time.monotonic() >= deadline:
-                        raise
-                    time.sleep(min(0.025, max(0, deadline - time.monotonic())))
+            if self.transport == "marker":
+                if not resuming:
+                    # The MCP lease keeper may be rotating the same lease.
+                    with suppress(FileExistsError):
+                        publish_lease(self.root)
+                    assert marker_slot is not None
+                    marker_slot.publish(deadline)
+            else:
+                pending.write_text(payload, encoding="ascii")
+                while True:
+                    try:
+                        pending.replace(self.root / "request.lua")
+                        break
+                    except PermissionError:
+                        # Windows readers may briefly deny delete/rename sharing.
+                        # Retry publication of the SAME ID, never a new operation.
+                        if time.monotonic() >= deadline:
+                            raise
+                        time.sleep(min(0.025, max(0, deadline - time.monotonic())))
             while time.monotonic() < deadline:
                 try:
                     errors = (
@@ -397,6 +536,9 @@ class LuaSnapshotClient:
                             "INVALID_AUDIO_OPERATION",
                         }:
                             receipt.reject(code)
+                            acknowledged = True
+                        elif not write:
+                            acknowledged = True
                         raise BridgeProtocolError(
                             f"Lua edit failed: {code}. No automatic retry; "
                             "inspect the receipt and backup."
@@ -479,8 +621,12 @@ class LuaSnapshotClient:
                             if action == "quit_resolve"
                             else "Poll get_render_status; never resubmit this start."
                         )
+                    if resuming:
+                        result["reconciled_original_command"] = True
                     receipt.complete(result)
+                    acknowledged = True
                     return result
+                acknowledged = True
                 if summary_request:
                     if normalized.get("inspect_camera_visibility"):
                         match = re.fullmatch(
@@ -675,7 +821,12 @@ class LuaSnapshotClient:
                         result["output"] = verify_video(Path(owned_job["output_path"]))
                     return result
                 if action == "ping":
-                    return {"message": "pong", "transport": "experimental_lua_snapshot"}
+                    return {
+                        "message": "pong",
+                        "transport": "experimental_free_marker"
+                        if self.transport == "marker"
+                        else "experimental_lua_snapshot",
+                    }
                 if action == "stop":
                     atomic_json(self.root / "stopped.json", {"session": self.session})
                     return {"status": "stopping"}
@@ -692,11 +843,31 @@ class LuaSnapshotClient:
                     ),
                     "next_action": "Poll again; do not start the job again.",
                 }
-            raise LuaCommandTimeoutError(command_id, timeout_seconds)
+            raise LuaCommandTimeoutError(
+                command_id, timeout_seconds, marker=self.transport == "marker"
+            )
+        except (OSError, MarkerTransportError):
+            if (
+                receipt is not None
+                and marker_slot is not None
+                and not resuming
+                and not marker_slot.published
+                and receipt.value.get("status") == "pending"
+            ):
+                # No immutable inbox was exposed: this is a known host failure,
+                # not an uncertain native write. Retain its rejected receipt.
+                receipt.reject("HOST_NOT_PUBLISHED")
+            raise
         finally:
             try:
-                (self.root / "request.lua").write_text("return nil\n", encoding="ascii")
-                pending.unlink(missing_ok=True)
+                if self.transport == "marker":
+                    if marker_slot is not None and (acknowledged or not write):
+                        marker_slot.clear()
+                else:
+                    (self.root / "request.lua").write_text(
+                        "return nil\n", encoding="ascii"
+                    )
+                    pending.unlink(missing_ok=True)
                 # Retain archives locally for diagnosis; never upload/commit them.
             finally:
                 lock.unlink(missing_ok=True)
