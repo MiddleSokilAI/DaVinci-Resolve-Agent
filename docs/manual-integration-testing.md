@@ -82,7 +82,7 @@ media paths, повні command arguments або diagnostics bundles без по
 
 ## Поточне покриття
 
-### Console mode without disk Lua loaders — 2026-10-28
+### Console mode without disk Lua loaders — 2026-10-29
 
 - Environment: Windows 10 Education, version 10.0.19045, build 19045;
   Python 3.12.10; agent 0.1.0; experimental Lua snapshot protocol 4.

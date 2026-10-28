@@ -28,7 +28,7 @@ The existing file-based transport also supports a chunk-local `loadfile`
 fallback when only `dofile` is missing. It does not modify interpreter globals
 and fails explicitly if neither loader exists.
 
-See [the manual integration matrix](manual-integration-testing.md#console-mode-without-disk-lua-loaders--2026-10-28)
+See [the manual integration matrix](manual-integration-testing.md#console-mode-without-disk-lua-loaders--2026-10-29)
 for the measured subset. Hardware microphone selection, input patching,
 record arming and EQ/Dynamics/effect verification are outside this adapter.
 Console transport success must not be described as a recording-ready session.
