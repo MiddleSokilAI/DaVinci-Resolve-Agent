@@ -60,6 +60,7 @@ version = {attr = "agent.__version__"}
   "ResolveHostMetadata.ps1",
   "ResolveBootstrapUI.ps1",
   "ResolveAutostartEntry.ps1",
+  "ResolveProjectManagerUI.ps1",
 ]
 config = [
   "*.toml",

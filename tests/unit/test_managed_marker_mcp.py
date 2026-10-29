@@ -12,12 +12,13 @@ from typing import Any
 
 import pytest
 from mcp.server import MCPServer
-from mcp.types import CallToolResult
+from mcp.types import CallToolResult, ToolAnnotations
 
 import mcp_server.managed_marker as module
 from mcp_server.managed_marker import ManagedMarkerServer
 from providers.resolve.marker_supervisor import OperationBusy, Profile, operation_lock
 from providers.resolve.marker_transport import prepare_marker
+from providers.resolve.project_open_service import ProjectOpenError, ProjectOpenService
 
 
 async def call_result(
@@ -70,7 +71,8 @@ def test_catalogue_available_without_native_or_active(
 
     async def scenario() -> None:
         tools = await server.list_tools()
-        assert len(tools) == 52
+        assert len(tools) == 53
+        assert "resolve_free_open_project" in {tool.name for tool in tools}
         status = await call_result(server, "resolve_free_autostart_status", {})
         assert status.structured_content is not None
         assert status.structured_content["native_connection_verified"] is False
@@ -223,5 +225,140 @@ def test_concurrent_catalogue_startup_is_serialized(tmp_path: Path) -> None:
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = [pool.submit(make), pool.submit(make)]
-        assert [future.result(20) for future in futures] == [52, 52]
+        assert [future.result(20) for future in futures] == [53, 53]
     assert (profile.state_directory / "catalogue-runtime/session.json").is_file()
+
+
+def open_arguments() -> dict[str, Any]:
+    return {
+        "project_name": "Existing Project", "expected_project_id": "project-uuid",
+        "expected_database": {"DbType": "Disk", "DbName": "Local Library"},
+        "folder_path": [], "idempotency_key": "open-one", "confirm": True,
+    }
+
+
+def test_host_open_available_without_native_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = profile_at(tmp_path)
+    monkeypatch.setattr(module, "read_active", lambda profile: None)
+    calls: list[dict[str, Any]] = []
+
+    class Opener(ProjectOpenService):
+        def open_existing(self, **arguments: Any) -> dict[str, Any]:
+            calls.append(arguments)
+            return {"native_connection_verified": True, "project": "verified"}
+
+    server = ManagedMarkerServer(profile, project_opener=Opener(profile))
+    result = asyncio.run(call_result(
+        server, "resolve_free_open_project", open_arguments()
+    ))
+    assert result.structured_content == {
+        "native_connection_verified": True, "project": "verified"
+    }
+    assert calls == [open_arguments()]
+
+
+def test_host_open_errors_are_structured(tmp_path: Path) -> None:
+    profile = profile_at(tmp_path)
+
+    class Opener(ProjectOpenService):
+        def open_existing(self, **arguments: Any) -> dict[str, Any]:
+            raise ProjectOpenError("AMBIGUOUS_PROJECT", uncertain=False)
+
+    server = ManagedMarkerServer(profile, project_opener=Opener(profile))
+    result = asyncio.run(call_result(
+        server, "resolve_free_open_project", open_arguments()
+    ))
+    assert result.is_error
+    assert "AMBIGUOUS_PROJECT" in str(result.content)
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_pending_or_invalid_host_open_blocks_writes_but_allows_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, corrupt: bool,
+) -> None:
+    profile = profile_at(tmp_path)
+    active = active_at(profile, "active")
+    install_state(monkeypatch, profile, active, active)
+    mutations: list[str] = []
+
+    def pending(profile: Profile) -> dict[str, Any]:
+        if corrupt:
+            raise ProjectOpenError("INVALID_HOST_RECEIPT")
+        return {"pending": True}
+
+    monkeypatch.setattr(module, "pending_project_open", pending)
+
+    def factory(root: Path, **kwargs: Any) -> MCPServer[Any]:
+        backend: MCPServer[Any] = MCPServer("pending-host")
+
+        @backend.tool(annotations=ToolAnnotations(read_only_hint=False))
+        async def mutate(idempotency_key: str) -> dict[str, Any]:
+            mutations.append(idempotency_key)
+            return {"changed": True}
+
+        @backend.tool(annotations=ToolAnnotations(read_only_hint=True))
+        async def read() -> dict[str, Any]:
+            return {"read": True}
+
+        return backend
+
+    server = ManagedMarkerServer(profile, backend_factory=factory)
+
+    async def scenario() -> None:
+        result = await call_result(server, "mutate", {"idempotency_key": "mutation"})
+        assert result.is_error
+        assert ("INVALID_HOST_RECEIPT" if corrupt else
+                "PROJECT_OPEN_VERIFICATION_PENDING") in str(result.content)
+        read = await call_result(server, "read", {})
+        assert read.structured_content == {"read": True}
+        assert mutations == []
+        assert not (profile.state_directory / "write-owners").exists()
+
+    asyncio.run(scenario())
+
+
+def test_project_open_key_cannot_be_claimed_by_native_write(tmp_path: Path) -> None:
+    profile = profile_at(tmp_path)
+    active = active_at(profile, "active")
+    key = "host-operation"
+    folder = profile.state_directory / "project-open-receipts"
+    folder.mkdir()
+    (folder / f"{hashlib.sha256(key.encode()).hexdigest()}.json").write_text(
+        "{}", encoding="utf-8"
+    )
+    with operation_lock(profile), pytest.raises(
+        module.OriginalGenerationRequired, match="host project-open"
+    ):
+        module.claim_write_key(profile, active, key)
+    assert not (profile.state_directory / "write-owners").exists()
+
+
+def test_host_open_cancellation_drains_worker(tmp_path: Path) -> None:
+    profile = profile_at(tmp_path)
+    started, release = threading.Event(), threading.Event()
+
+    class Opener(ProjectOpenService):
+        def open_existing(self, **arguments: Any) -> dict[str, Any]:
+            started.set()
+            assert release.wait(10)
+            return {"finished": True}
+
+    server = ManagedMarkerServer(profile, project_opener=Opener(profile))
+
+    async def scenario() -> None:
+        request = asyncio.create_task(server.call_tool(
+            "resolve_free_open_project", open_arguments()
+        ))
+        try:
+            assert await asyncio.to_thread(started.wait, 5)
+            request.cancel()
+            await asyncio.sleep(0)
+            assert not request.done()
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+
+    asyncio.run(scenario())

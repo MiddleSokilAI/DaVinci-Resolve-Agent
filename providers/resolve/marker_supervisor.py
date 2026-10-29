@@ -282,6 +282,13 @@ def catalogue_lock(profile: Profile) -> Iterator[None]:
         yield
 
 
+@contextmanager
+def project_open_lock(profile: Profile) -> Iterator[None]:
+    """Serialize an entire host project-open flow without blocking bootstrap ticks."""
+    with _lock(profile, "project-open.lock"):
+        yield
+
+
 def _runtime(profile: Profile, value: Any) -> Path:
     """Require a non-base runtime inside the explicitly controlled directory."""
     root = _absolute(value)

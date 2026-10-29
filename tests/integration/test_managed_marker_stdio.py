@@ -32,7 +32,8 @@ def test_managed_stdio_catalogue_and_waiting_status(tmp_path: Path) -> None:
         ):
             await client.initialize()
             tools = await client.list_tools()
-            assert len(tools.tools) == 52
+            assert len(tools.tools) == 53
+            assert "resolve_free_open_project" in {t.name for t in tools.tools}
             assert "resolve_free_autostart_status" in {t.name for t in tools.tools}
             result = await client.call_tool("resolve_free_autostart_status", {})
             assert not result.is_error

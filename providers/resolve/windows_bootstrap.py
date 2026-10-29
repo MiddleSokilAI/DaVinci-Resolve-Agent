@@ -7,6 +7,7 @@ It accepts no script text, menu selectors, coordinates, or key sequences.
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import math
@@ -18,6 +19,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from providers.resolve.lua_transport import lua_string
 from providers.resolve.marker_transport import validate_marker_metadata
@@ -89,13 +91,55 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
-def _official_executable() -> str:
-    """Select the fixed installed application path, never a caller command."""
-    program_files = os.environ.get("PROGRAMW6432") or os.environ.get(
-        "PROGRAMFILES", r"C:\Program Files"
+def _known_program_files() -> str:
+    """Read Windows' 64-bit known folder; portable tests may inject this seam."""
+    if os.name != "nt":
+        # The Windows adapters remain unavailable outside Windows. This fixed
+        # fixture value keeps their pure response boundaries portable.
+        return r"C:\Program Files"
+
+    class FolderId(ctypes.Structure):
+        _fields_ = [
+            ("data1", ctypes.c_uint32),
+            ("data2", ctypes.c_uint16),
+            ("data3", ctypes.c_uint16),
+            ("data4", ctypes.c_ubyte * 8),
+        ]
+
+    folder = FolderId.from_buffer_copy(
+        UUID("6d809377-6af0-444b-8957-a3773f02200e").bytes_le
     )
+    shell = ctypes.WinDLL("shell32", use_last_error=True)
+    task = ctypes.WinDLL("ole32", use_last_error=True)
+    get_folder = shell.SHGetKnownFolderPath
+    get_folder.argtypes = [
+        ctypes.POINTER(FolderId),
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    get_folder.restype = ctypes.c_long
+    release = task.CoTaskMemFree
+    release.argtypes = [ctypes.c_void_p]
+    release.restype = None
+    allocated = ctypes.c_void_p()
+    try:
+        result = get_folder(ctypes.byref(folder), 0, None, ctypes.byref(allocated))
+        if result != 0 or not allocated.value:
+            raise ValueError("Windows Program Files known folder is unavailable.")
+        program_files = ctypes.wstring_at(allocated.value)
+        if not program_files or not ntpath.isabs(program_files):
+            raise ValueError("Invalid Windows Program Files known folder.")
+        return ntpath.normpath(program_files)
+    finally:
+        if allocated.value:
+            release(allocated)
+
+
+def _official_executable() -> str:
+    """Select the OS-defined installed application path, never caller data."""
     return ntpath.join(
-        program_files, "Blackmagic Design", "DaVinci Resolve", "Resolve.exe"
+        _known_program_files(), "Blackmagic Design", "DaVinci Resolve", "Resolve.exe"
     )
 
 

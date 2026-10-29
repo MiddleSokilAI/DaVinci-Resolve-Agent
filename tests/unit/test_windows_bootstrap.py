@@ -10,6 +10,8 @@ import base64
 import copy
 import hashlib
 import json
+import ntpath
+import os
 import shutil
 import subprocess
 import sys
@@ -32,6 +34,66 @@ from providers.resolve.windows_bootstrap import (
 
 ENTRY = Path(module.__file__).with_name("ResolveBootstrapUI.ps1")
 POWERSHELL = shutil.which("powershell.exe")
+
+
+@pytest.mark.parametrize("environment", ["missing", "wrong"])
+def test_python_official_path_uses_injectable_os_folder_not_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    environment: str,
+) -> None:
+    monkeypatch.setattr(module, "_known_program_files", lambda: r"D:\OS Program Files")
+    for key in ("PROGRAMFILES", "PROGRAMW6432"):
+        if environment == "missing":
+            monkeypatch.delenv(key, raising=False)
+        else:
+            monkeypatch.setenv(key, r"C:\caller-controlled")
+    assert module._official_executable() == (
+        r"D:\OS Program Files\Blackmagic Design\DaVinci Resolve\Resolve.exe"
+    )
+
+
+@pytest.mark.parametrize("environment", ["missing", "wrong"])
+def test_bootstrap_ps_official_path_ignores_filtered_or_wrong_environment(
+    environment: str,
+) -> None:
+    result = _offline_powershell(
+        r"""
+        $mode=ConvertFrom-Json ([Console]::In.ReadToEnd());
+        if($mode -ceq 'missing'){
+            [Environment]::SetEnvironmentVariable('ProgramFiles',$null,'Process');
+            [Environment]::SetEnvironmentVariable('ProgramW6432',$null,'Process');
+        }else{
+            $env:ProgramFiles='C:\untrusted-program-files';
+            $env:ProgramW6432='C:\untrusted-program-files-x64';
+        }
+        $folder=[Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles);
+        $relative='Blackmagic Design\DaVinci Resolve\Resolve.exe';
+        $expected=[IO.Path]::GetFullPath((Join-Path $folder $relative));
+        @{actual=(Get-BootstrapOfficialExecutable);expected=$expected}|
+            ConvertTo-Json -Compress
+    """,
+        environment,
+    )
+    assert result["actual"] == result["expected"]
+    assert "untrusted-program-files" not in result["actual"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows OS metadata only")
+@pytest.mark.parametrize("environment", ["missing", "wrong"])
+def test_native_python_known_folder_matches_64bit_powershell_without_ui(
+    monkeypatch: pytest.MonkeyPatch,
+    environment: str,
+) -> None:
+    for key in ("PROGRAMFILES", "PROGRAMW6432"):
+        if environment == "missing":
+            monkeypatch.delenv(key, raising=False)
+        else:
+            monkeypatch.setenv(key, r"C:\untrusted-root")
+    expected = _offline_powershell(r"""
+        [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)|
+            ConvertTo-Json -Compress
+    """)
+    assert ntpath.normcase(module._known_program_files()) == ntpath.normcase(expected)
 
 
 def process(**changes: Any) -> dict[str, Any]:
@@ -95,6 +157,7 @@ def driver(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Intercept every subprocess call, even when tests run on Windows."""
     monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(module, "_known_program_files", lambda: r"C:\Program Files")
     monkeypatch.setenv("ProgramW6432", r"C:\Program Files")
     calls: list[dict[str, Any]] = []
     state: dict[str, Any] = {"returncode": 0}
