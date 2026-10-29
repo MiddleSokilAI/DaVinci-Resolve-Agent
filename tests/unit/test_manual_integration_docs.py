@@ -73,16 +73,20 @@ def test_manual_matrix_records_codex_mcp_acceptance() -> None:
     assert "background bridge startup was not tested or claimed" in matrix
 
 
-def test_current_docs_record_bounded_persistent_bridge_verification() -> None:
+def test_user_guide_links_to_preserved_bridge_reference() -> None:
     root = Path(__file__).parents[2]
     readme = (root / "README.md").read_text(encoding="utf-8")
+    reference = (root / "docs" / "README-reference.md").read_text(encoding="utf-8")
     troubleshooting = (root / "docs" / "troubleshooting.md").read_text(
         encoding="utf-8"
     )
 
-    assert "Milestone M35: interactive editing session" in readme
-    assert "resolve_stop_bridge" in readme
-    assert "перевірено у Resolve 21 Free 21.0.3.7" in readme
+    assert "## Перше підключення Resolve Free" in readme
+    assert "(docs/free-mcp-backend.md)" in readme
+    assert "(docs/README-reference.md)" in readme
+    assert "Milestone M35: interactive editing session" in reference
+    assert "resolve_stop_bridge" in reference
+    assert "перевірено у Resolve 21 Free 21.0.3.7" in reference
     assert "M1 is intentionally one-shot" not in troubleshooting
     assert "Resolve UI becomes unresponsive after bridge start" in troubleshooting
     assert "M35 persistent bridge and editing metadata evidence" in _matrix_text()
