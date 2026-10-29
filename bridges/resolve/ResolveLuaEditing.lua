@@ -96,6 +96,7 @@ return function(api, root, media_roots, shared)
     end
     local finish = dofile(root .. "/finishing.lua")(api, root, {
         check=check, timelines=timelines, allowed=allowed, normalized=normalized,
+        media_roots=media_roots,
         find_asset=find_asset}, shared)
     local sync = dofile(root .. "/sync.lua")({check=check, timelines=timelines,
         allowed=allowed, find_asset=find_asset, normalized=normalized})

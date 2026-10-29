@@ -1,7 +1,7 @@
 """Typed stdio MCP backend for Resolve Free's native marker data channel.
 
-This module never drives a user interface or evaluates caller-supplied code.
-The menu script must be started once per native Resolve session.
+The marker channel never evaluates caller-supplied code. Optional Windows UI
+tools use a separate, fixed semantic adapter only with explicit host opt-in.
 """
 
 from __future__ import annotations
@@ -17,7 +17,9 @@ from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
 from mcp_server.lua_experimental import create_server as create_lua_server
+from mcp_server.windows_recording import register_windows_recording_tools
 from providers.resolve.lua_transport import LuaSnapshotClient
+from providers.resolve.recording_ui_service import RecordingUIService
 
 MENU_FILE = "Resolve Agent Marker.lua"
 MENU_HEADER = "-- DaVinci Resolve Agent: managed Free marker menu script\n"
@@ -31,7 +33,9 @@ UNSUPPORTED_RECORDING_CONTROLS = (
 )
 
 
-def create_server(root: Path) -> MCPServer:
+def create_server(
+    root: Path, *, enable_windows_recording_ui: bool = False,
+) -> MCPServer:
     """Create a marker-backed MCP surface, retaining the typed Lua guards."""
     root = root.resolve()
     metadata = json.loads((root / "session.json").read_text(encoding="utf-8"))
@@ -47,13 +51,17 @@ def create_server(root: Path) -> MCPServer:
             "Only typed bounded commands are supported; no arbitrary code. "
             "Writes require exact project identity, confirmation, and stable "
             "idempotency keys. After a timeout reconcile the original receipt; "
-            "never resubmit a write with a new key. Physical microphone routing, "
-            "record arm and track/bus processing controls are unsupported. "
+            "never resubmit a write with a new key. Named mono tracks, sample-rate "
+            "inspection, seek and project media roots use guarded native tools. "
+            "Physical input selection has a separate opt-in Windows UI adapter. "
+            "Input patching, record arm and track/bus processing remain unsupported. "
             "Native project exports are local responses and can be expensive."
         ),
         excluded_tools=frozenset({"resolve_lua_reload_modules"}),
     )
     client = LuaSnapshotClient(root)
+    ui_service = RecordingUIService(root, client, enabled=enable_windows_recording_ui)
+    register_windows_recording_tools(server, ui_service)
 
     @server.tool(
         annotations=ToolAnnotations(
@@ -76,7 +84,14 @@ def create_server(root: Path) -> MCPServer:
             "session": client.session,
             "liveness_source": "fresh_native_request",
             "max_payload_bytes": metadata.get("max_payload_bytes", 4096),
-            "unsupported_recording_controls": list(UNSUPPORTED_RECORDING_CONTROLS),
+            "unsupported_recording_controls": [
+                control for control in UNSUPPORTED_RECORDING_CONTROLS
+                if control != "physical_input_device"
+                or not ui_service.adapter.capabilities().get("available")
+            ],
+            "recording_native_api": "recording_api_v1" in client.capabilities,
+            "recording_windows_ui": ui_service.adapter.capabilities(),
+            "recording_readiness": "not_assessed",
         }
         try:
             result = await asyncio.to_thread(
@@ -139,12 +154,15 @@ def install_menu_script(root: Path, scripts_directory: Path | None = None) -> Pa
     return target
 
 
-def run(root: Path) -> None:
+def run(root: Path, *, enable_windows_recording_ui: bool = False) -> None:
     """Serve stdio while maintaining the data-channel lease, without auto-play."""
     from providers.resolve.marker_transport import MarkerLeaseKeeper
 
     with MarkerLeaseKeeper(root):
-        create_server(root).run()
+        server = create_server(
+            root, enable_windows_recording_ui=enable_windows_recording_ui,
+        )
+        server.run()
 
 
 def main() -> None:
@@ -156,6 +174,7 @@ def main() -> None:
     parser.add_argument("--scripts-directory", type=Path)
     parser.add_argument("--media-root", type=Path, action="append", default=[])
     parser.add_argument("--lease-seconds", type=int, default=600)
+    parser.add_argument("--enable-windows-recording-ui", action="store_true")
     args = parser.parse_args()
     if args.prepare:
         from providers.resolve.marker_transport import prepare_marker
@@ -172,7 +191,7 @@ def main() -> None:
     elif args.install_script:
         print(install_menu_script(args.runtime, args.scripts_directory))
     else:
-        run(args.runtime)
+        run(args.runtime, enable_windows_recording_ui=args.enable_windows_recording_ui)
 
 
 if __name__ == "__main__":

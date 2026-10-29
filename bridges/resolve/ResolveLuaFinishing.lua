@@ -23,6 +23,9 @@ return function(api, root, helpers, shared)
         local timeline = timelines(project, request.arguments.timeline_name)
         check(timeline ~= nil, "TIMELINE_NOT_FOUND")
         local a=request.arguments
+        if a.recording then
+            return dofile(root.."/recording.lua").inspect(api,project,a)
+        end
         if a.ripple_batch then
             return dofile(root..'/ripple_batch.lua')(helpers,root,request.id,true)(project,a)
         end
@@ -97,6 +100,11 @@ return function(api, root, helpers, shared)
     end
     local function preflight(project, request)
         local a, action = request.arguments, request.action
+        if action == "set_clip_properties" and a.recording then
+            return function()
+                return dofile(root.."/recording.lua").apply(api,project,a,helpers.media_roots)
+            end
+        end
         if action == "set_clip_properties" and a.ripple_batch then
             return dofile(root..'/ripple_batch.lua')(helpers,root,request.id)(project,a)
         end

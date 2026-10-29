@@ -12,6 +12,7 @@ from providers.resolve.lua_camera_visibility import validate_camera_visibility
 from providers.resolve.lua_editing import bounded_text
 from providers.resolve.lua_native_audio import validate_native_audio
 from providers.resolve.lua_privacy import validate_privacy, validate_privacy_batch
+from providers.resolve.lua_recording import validate_recording
 from providers.resolve.lua_ripple import validate_batch, validate_ripple, validate_span
 
 FINISH_ACTIONS = frozenset(
@@ -30,6 +31,8 @@ PROPERTY_LIMITS = {
 def validate_finishing(
     action: str, a: dict[str, Any], roots: list[Path]
 ) -> dict[str, Any]:
+    if "recording" in a:
+        return validate_recording(action, a, roots)
     if action == "set_clip_properties" and "native_audio" in a:
         return validate_native_audio(a)
     if (

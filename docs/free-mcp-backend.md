@@ -1,5 +1,12 @@
 # Free marker MCP backend
 
+Recording preparation now includes bounded native track inspection, mono
+creation, seek and project media-root settings. Optional Windows UI tools can
+inspect the transport and select an input device. See the practical
+[recording preparation guide](recording-preparation.md) for examples, opt-in and
+the controls that still require Fairlight. Connection success is not recording
+readiness.
+
 `free-marker` is an implemented, opt-in backend of `davinci-agent-mcp`. It
 connects the typed Lua tool surface to a self-contained Scripts-menu bridge
 without `dofile`, `loadfile`, external scripting or a payload-code evaluator.

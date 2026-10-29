@@ -52,6 +52,8 @@ REQUIRED_MEMBERS: Final = frozenset(
         "mcp_server/server.py",
         "providers/base.py",
         "providers/resolve/client.py",
+        "providers/resolve/ResolveRecordingUI.ps1",
+        "bridges/resolve/ResolveLuaRecording.lua",
         "transports/filesystem.py",
     }
 )
