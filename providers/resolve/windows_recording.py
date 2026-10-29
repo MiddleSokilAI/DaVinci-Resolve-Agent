@@ -29,7 +29,7 @@ UNSUPPORTED_CONTROLS = (
 
 
 class WindowsRecordingError(RuntimeError):
-    """A bounded UI operation failed, possibly after changing the input device."""
+    """A bounded UI operation failed, possibly after changing an audio setting."""
 
     def __init__(self, code: str, *, uncertain: bool = False) -> None:
         self.code = code
@@ -37,7 +37,7 @@ class WindowsRecordingError(RuntimeError):
         super().__init__(
             f"Windows recording adapter: {code}. "
             + (
-                "The input device may have changed; inspect it before retrying."
+                "The audio setting may have changed; reconcile its original receipt."
                 if uncertain
                 else "No recording was requested."
             )

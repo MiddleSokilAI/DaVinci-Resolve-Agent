@@ -1,5 +1,36 @@
 # Architecture
 
+## Scoped Windows Fairlight controls
+
+The Free marker channel remains a typed native data transport. Physical input
+selection and the Fairlight controls absent from the SDK use separate fixed
+host adapters; callers cannot supply scripts, coordinates, selectors or keys.
+`mcp_server/fairlight.py` registers seven tools backed by `FairlightUIService`
+and `WindowsFairlightAdapter`, both gated by `--enable-windows-recording-ui`.
+
+The service fences project identity and exact track name/index against fresh
+native reads, requires mono tracks for input patches, and shares mailbox
+ownership with the existing input-device service. Before a first mutation it
+checks stopped transport and reuses the existing guarded native save/export/page
+operation for a project backup. A pending GUI receipt prevents a replacement
+write. Recovery with the same key invokes only the corresponding getter and
+retains original and reconciliation evidence separately.
+
+The shipped PowerShell driver accepts six semantic JSON verbs. Core helpers bind
+the Resolve process, project, selected timeline, stopped transport and verified
+per-monitor DPI context. UIA identifies accessible controls; scoped GDI/local
+Windows OCR and positive raster profiles identify painted mixer/track controls.
+Unknown or ambiguous geometry/state fails closed. The patch module accepts only
+exact accessible table/list source and destination assignment evidence. It
+never infers a route from a source choice. EQ/Dynamics and patch windows are
+reopened; track arm is reacquired. All global transport targets are excluded.
+
+New Fairlight controls remain `live_pending` until manual Windows acceptance.
+`available` expresses host opt-in/platform only. Reopened state does not prove
+DSP audio quality or disk persistence. Save-menu dispatch is reported separately
+from read-only recovery (`save_status`), and `persistence_verified` remains false.
+No operation starts recording; inserts/other effects remain outside this adapter.
+
 ## M54 technical take-selection boundary
 
 ```text
