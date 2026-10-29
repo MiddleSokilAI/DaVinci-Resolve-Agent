@@ -12,7 +12,7 @@ end
 local api = assert(resolve, "Run inside Resolve with injected resolve")
 assert(type(bmd.wait) == "function", "Cooperative wait unavailable")
 assert(os and type(os.time) == "function", "Clock unavailable")
-local writes = {quit_resolve=true, import_media=true, create_timeline=true, duplicate_timeline=true, append_clip=true,
+local writes = {quit_resolve=true, create_project=true, import_media=true, create_timeline=true, duplicate_timeline=true, append_clip=true,
     set_clip_properties=true, add_subtitles=true, prepare_render=true, start_render=true}
 local shared = {jobs={}}
 local edit = dofile(root .. "/editing.lua")(api, root, media_roots, shared)

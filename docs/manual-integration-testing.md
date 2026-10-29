@@ -82,6 +82,29 @@ media paths, повні command arguments або diagnostics bundles без по
 
 ## Поточне покриття
 
+### Free marker project creation — automated coverage
+
+`resolve_lua_create_project` has a separate acceptance scope from the existing
+marker connection checks below. Automated checks exercise the real generated
+Lua 5.1 bundle with native API doubles, marker files, DRP parsing and MCP stdio:
+
+- Original project identity, explicit confirmation, supported session capability,
+  name collisions and rendering are checked before creation.
+- The old project is saved and backed up before creating and saving the new one;
+  response readback matches the new project while the backup matches the old ID.
+- Exact-key replay after an MCP client restart retains the original project ID
+  and creates no duplicate or extra project switch. Partial creation failures
+  remain uncertain rather than being treated as safe automatic retries.
+- Marker lifecycle evidence follows the verified new active project after
+  creation, including acknowledged stop.
+
+Live creation in installed Resolve: **`pending`**. The earlier native read,
+write and reconnect evidence does not certify this newly added operation.
+Creating from Project Manager without an open saved bootstrap project is not
+supported by this Free marker path. Automated API doubles do not establish
+library permissions, project-name behavior or switching UI behavior on every
+installed Resolve version.
+
 ### Free marker MCP backend — 2026-10-29
 
 - Environment: Windows 10 Education 10.0.19045, host Python 3.12.10,
