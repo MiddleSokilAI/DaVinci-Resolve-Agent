@@ -1482,16 +1482,19 @@ def main() -> None:
         "--backend", choices=("python", "free-marker"), default="python"
     )
     parser.add_argument("--runtime", type=Path)
+    parser.add_argument("--enable-windows-recording-ui", action="store_true")
     args = parser.parse_args()
     if args.backend == "free-marker":
         if args.runtime is None:
             parser.error("--backend free-marker requires --runtime")
         from mcp_server.free_marker import run
 
-        run(args.runtime)
+        run(args.runtime, enable_windows_recording_ui=args.enable_windows_recording_ui)
         return
     if args.runtime is not None:
         parser.error("--runtime is only supported with --backend free-marker")
+    if args.enable_windows_recording_ui:
+        parser.error("--enable-windows-recording-ui requires --backend free-marker")
     create_server().run()
 
 

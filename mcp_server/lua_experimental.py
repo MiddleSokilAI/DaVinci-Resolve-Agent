@@ -11,6 +11,7 @@ from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
 from agent import __version__
+from mcp_server.recording import register_native_recording_tools
 from providers.resolve.lua_cleanup import cleanup_responses
 from providers.resolve.lua_transport import LuaSnapshotClient, prepare
 
@@ -893,6 +894,7 @@ def create_server(
             client.request, "reload_modules", timeout_seconds
         )
 
+    register_native_recording_tools(server, client)
     for tool_name in excluded_tools:
         server.remove_tool(tool_name)
     return server

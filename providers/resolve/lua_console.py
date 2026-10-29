@@ -18,6 +18,7 @@ ALLOWED_ACTIONS = {
     "get_timeline_summary",
 }
 MODULES = (
+    "recording.lua",
     "editing.lua",
     "finishing.lua",
     "native_audio.lua",

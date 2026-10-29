@@ -1092,3 +1092,40 @@ Live acceptance confirmed an exact-length derived take, retained original take,
 unchanged linked master audio and neighboring composition, and a native render.
 A shorter replacement was rejected before mutation. Private review media and
 readback artifacts are deliberately excluded from the repository.
+
+### Recording preparation API — 2026-10-29
+
+Environment: Windows 10 build 19045, Resolve **Free 21.1.2.10** (edition
+operator-confirmed), Python **3.12.10**, agent **0.1.0**, marker protocol **1** /
+Lua protocol **4**, fresh `recording_api_v1` bundle. UTC run: approximately
+2026-10-29 03:50–03:57. Native recording module SHA-256:
+`d19d24028fc5e37a892bdcfaa9ba9a53aef9305fcc8c78245ee6d0475d057df2`.
+Native bundle SHA-256:
+`15dee3fa71eff3f9e56f44b7eb7537f381c3769ccb26b18d97d6d7416e0afabb`.
+Private projects, DRP backups, runtime paths and complete device names remain
+outside the repository.
+
+| Operation | Live result | Limits |
+| --- | --- | --- |
+| MCP stdio tool discovery and fresh native project read | `verified` | 43 typed tools; correct saved project identity |
+| Inspect existing mono/stereo tracks, empty clips and 48 kHz | `verified` | Real Lua arrays contain numeric `__flags` metadata; ignored explicitly without accepting unknown keys |
+| Reuse an existing named mono track and exact-key replay | `verified` | Backup and native readback retained; no duplicate track |
+| Create a real mono track in a separate empty test timeline | `verified` | Track count/name/mono subtype/zero clips verified, then replayed without another append |
+| Seek and return to the original Fairlight timeline | `verified` | Exact 01:00:00:00 readback; original page restored |
+| Set the same existing allowed project media root | `verified` | Documented settings API and exact native readback; not a recorded-file path/format test |
+| Read Windows main transport state | `verified` | Stop on, Play/Record off; no microphone capture |
+| Windows input-device selection and reopened verification | `pending` | Attempt refused before selection because Windows returned no foreground window. No device change or saved Preferences modification was accepted |
+| Physical input patch, record arm, track/bus processing controls | `unsupported` | No verified setter in this delivery |
+
+Native write calls required exact project identity, confirmation and stable
+idempotency keys; each produced its local before/response exports. The original
+voice timeline retained **zero audio/video items** after acceptance, and the
+final main transport state was stopped with Record off. The separate empty test
+timeline remains as a visible test artifact. No recording, normalization or
+processing operation was invoked.
+
+Windows UI tests currently establish the request boundary and fail-closed
+behavior; mocked checks are not presented as live input-selection acceptance.
+Unlock the interactive session, bring Resolve forward, then repeat the bounded
+current-device/no-op check before marking that row verified. Keep the actual
+input patch and signal/processing checks separate from MCP liveness.

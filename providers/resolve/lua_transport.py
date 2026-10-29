@@ -40,6 +40,7 @@ from providers.resolve.marker_transport import (
     publish_lease,
     validate_marker_metadata,
 )
+from providers.resolve.recording_result import recording_result
 
 
 class LuaCommandTimeoutError(CommandTimeoutError):
@@ -106,6 +107,10 @@ def prepare(root: Path, media_roots: list[Path] | None = None) -> Path:
         editing.with_name("ResolveLuaNativeAudio.lua").read_text(encoding="utf-8"),
         encoding="utf-8",
     )
+    (root / "recording.lua").write_text(
+        editing.with_name("ResolveLuaRecording.lua").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
     (root / "audio_pilot.lua").write_text(
         editing.with_name("ResolveLuaAudioPilot.lua").read_text(encoding="utf-8"),
         encoding="utf-8",
@@ -140,7 +145,7 @@ def prepare(root: Path, media_roots: list[Path] | None = None) -> Path:
                 "session": session,
                 "protocol": 4,
                 "media_roots": roots,
-                "capabilities": ["quit_resolve", "create_project"],
+                "capabilities": ["quit_resolve", "create_project", "recording_api_v1"],
             }
         ),
         encoding="utf-8",
@@ -290,6 +295,12 @@ class LuaSnapshotClient:
                 f"Timeout must be finite and between 0 and {maximum_timeout} seconds."
             )
         write = action in WRITE_ACTIONS | FINISH_ACTIONS
+        recording_request = isinstance(arguments, dict) and "recording" in arguments
+        if recording_request and "recording_api_v1" not in self.capabilities:
+            raise ValueError(
+                "Recording controls require a freshly prepared "
+                "recording_api_v1 session."
+            )
         if action == "quit_resolve" and "quit_resolve" not in self.capabilities:
             raise ValueError(
                 "Quit requires a freshly prepared bridge with quit support."
@@ -541,6 +552,14 @@ class LuaSnapshotClient:
                             "INVALID_AUDIO_OPERATION",
                             "CREATE_PROJECT_UNAVAILABLE",
                             "PROJECT_LIST_UNAVAILABLE",
+                            "RECORDING_INVALID_ARGUMENTS",
+                            "RECORDING_TIMELINE_NOT_FOUND",
+                            "RECORDING_TRACK_NOT_MONO",
+                            "RECORDING_TRACK_LIMIT",
+                            "RECORDING_SEEK_PAGE_UNSUPPORTED",
+                            "RECORDING_MEDIA_POLICY_UNAVAILABLE",
+                            "RECORDING_MEDIA_ROOT_NOT_ALLOWED",
+                            "RECORDING_MEDIA_ROOT_READBACK_UNAVAILABLE",
                         }:
                             receipt.reject(code)
                             acknowledged = True
@@ -557,7 +576,11 @@ class LuaSnapshotClient:
                         and accepted_response.exists()
                     ):
                         response = accepted_response
-                    if action in {"prepare_render", "create_project"} or detail_request:
+                    if (
+                        action in {"prepare_render", "create_project"}
+                        or detail_request
+                        or recording_request
+                    ):
                         matches = list(self.root.glob(f"{command_id}.ok_*.drp"))
                         if not matches:
                             raise FileNotFoundError("Waiting for typed response.")
@@ -609,6 +632,9 @@ class LuaSnapshotClient:
                     }
                     if action == "create_project":
                         result["previous_project_id"] = expected_project_id
+                    if recording_request:
+                        result["recording"] = recording_result(token, normalized)
+                        result["readback_verified_by"] = "ResolveLuaRecording"
                     if action == "prepare_render":
                         ranged = "start_frame" in normalized
                         job_match = re.fullmatch(
@@ -651,6 +677,16 @@ class LuaSnapshotClient:
                     return result
                 acknowledged = True
                 if summary_request:
+                    if recording_request:
+                        if project["id"] != expected_project_id:
+                            raise BridgeProtocolError(
+                                "Recording response project changed."
+                            )
+                        return {
+                            "project": project,
+                            "recording": recording_result(token, normalized),
+                            "source": "live_lua_api",
+                        }
                     if normalized.get("inspect_camera_visibility"):
                         match = re.fullmatch(
                             r"visibility_(\d+)_(\d+)_(\d+)_(\d+)", token or ""
