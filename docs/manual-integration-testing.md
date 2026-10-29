@@ -1160,3 +1160,23 @@ fences, before/after master/patch/R state, reopened readback, saved-project
 persistence, no-op and uncertain recovery, plus final Stop on / Play and Record
 off. Exercise mixed-DPI placement and refuse a wrong/ambiguous target before
 mutation. Keep private screen media, device names and project backups local.
+
+## Free startup diagnostics — 2026-10-29
+
+The added startup diagnostic is covered offline: metadata and lifecycle DRP
+validation, managed-menu/runtime binding, recovery priority, optional mocked
+process hints, CLI read-only behavior, real stdio discovery and no-dispatch
+terminal status. Windows process metadata is tested with doubles and AST parsing;
+the bundled host probe was not executed against Resolve for this delivery.
+
+Read-only filesystem diagnostics were also applied to the reported exited
+runtime and the currently prepared runtime: the former has valid consumed/exit
+exports and a menu mismatch; the latter has a matching managed menu without
+native start evidence. This validates local classification, not current native
+connectivity, selected project, UI interaction or a cold-start workflow.
+
+Unattended startup, project catalogue/opening and bootstrap from Project Manager
+remain unsupported in this Free backend. The supported handoff requires opening
+an existing saved project, starting the managed menu script and verifying a new
+native project name/ID. Live Windows UI acceptance remains deferred by the
+operator. No production import, timeline change or recording was performed.
