@@ -12,13 +12,13 @@ return function(root, session, max_payload, lease_seconds)
     local null = {}
     local actions = {
         ping=true, get_current_project=true, stop=true, get_render_status=true,
-        get_timeline_summary=true, quit_resolve=true, import_media=true,
+        get_timeline_summary=true, quit_resolve=true, create_project=true, import_media=true,
         create_timeline=true, duplicate_timeline=true, append_clip=true,
         set_clip_properties=true, add_subtitles=true, prepare_render=true,
         start_render=true,
     }
     local writes = {
-        quit_resolve=true, import_media=true, create_timeline=true,
+        quit_resolve=true, create_project=true, import_media=true, create_timeline=true,
         duplicate_timeline=true, append_clip=true, set_clip_properties=true,
         add_subtitles=true, prepare_render=true, start_render=true,
     }

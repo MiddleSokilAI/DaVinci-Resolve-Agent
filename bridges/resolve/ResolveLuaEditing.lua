@@ -99,12 +99,83 @@ return function(api, root, media_roots, shared)
         find_asset=find_asset}, shared)
     local sync = dofile(root .. "/sync.lua")({check=check, timelines=timelines,
         allowed=allowed, find_asset=find_asset, normalized=normalized})
+    local function create_project(pm, project, request)
+        local a = request.arguments
+        check(type(a) == "table", "INVALID_ARGUMENTS")
+        for key in pairs(a) do check(key == "name", "INVALID_ARGUMENTS") end
+        check(text(a.name) and a.name:sub(1,1) ~= " " and a.name:sub(-1) ~= " ", "INVALID_ARGUMENTS")
+        -- The host bounds Unicode characters; retain the same limit in Lua
+        -- without locale-dependent character classes or bytewise truncation.
+        local _, characters = a.name:gsub("[^\128-\191]", "")
+        check(characters <= 128, "INVALID_ARGUMENTS")
+        for _, method in ipairs({"GetCurrentProject", "GetProjectListInCurrentFolder",
+            "CreateProject", "SaveProject", "ExportProject"}) do
+            check(type(pm[method]) == "function", "CREATE_PROJECT_UNAVAILABLE")
+        end
+        local names = pm:GetProjectListInCurrentFolder()
+        check(type(names) == "table", "PROJECT_LIST_UNAVAILABLE")
+        local count = 0
+        for key, value in pairs(names) do
+            count = count + 1
+            check(count <= 10000 and type(key) == "number" and key % 1 == 0
+                and key >= 1 and key <= 10000 and type(value) == "string", "PROJECT_LIST_UNAVAILABLE")
+        end
+        local function ascii_lower(value)
+            return value:gsub("[A-Z]", function(c) return string.char(c:byte() + 32) end)
+        end
+        local folded = ascii_lower(a.name)
+        for index = 1,count do
+            check(type(names[index]) == "string", "PROJECT_LIST_UNAVAILABLE")
+            check(ascii_lower(names[index]) ~= folded, "NAME_EXISTS")
+        end
+        -- Project userdata may be invalidated when CreateProject selects its
+        -- result. Capture the source identity before invoking that API.
+        local previous_id, previous_name = project:GetUniqueId(), project:GetName()
+        check(previous_id == request.project_id and text(previous_name), "PROJECT_CHANGED")
+        check(pm:SaveProject() == true, "BACKUP_SAVE_FAILED")
+        check(pm:ExportProject(previous_name, root .. "/" .. request.id .. ".before.drp", false) == true,
+            "BACKUP_EXPORT_FAILED")
+        local current = pm:GetCurrentProject()
+        check(current ~= nil and current:GetUniqueId() == previous_id, "PROJECT_CHANGED")
+        check(not current:IsRenderingInProgress(), "RENDERING")
+        check(request.expires >= os.time(), "EXPIRED")
+        local created_ok, created = pcall(pm.CreateProject, pm, a.name)
+        -- Every error below is an uncertain mutation. Do not reuse safe
+        -- preflight rejection codes or attempt to delete/load any project.
+        check(created_ok and created ~= nil and created ~= false, "CREATE_PROJECT_FAILED")
+        local verified, token = pcall(function()
+            check(type(created) == "table" or type(created) == "userdata", "VERIFY_FAILED")
+            check(type(created.GetUniqueId) == "function" and type(created.GetName) == "function",
+                "VERIFY_FAILED")
+            local created_id, created_name = created:GetUniqueId(), created:GetName()
+            check(type(created_id) == "string" and #created_id >= 1 and #created_id <= 128
+                and created_id:match("^[A-Za-z0-9-]+$") and created_id ~= previous_id
+                and created_name == a.name, "VERIFY_FAILED")
+            current = pm:GetCurrentProject()
+            check(current ~= nil and current:GetUniqueId() == created_id and current:GetName() == a.name,
+                "VERIFY_FAILED")
+            -- Keep lifecycle evidence for the verified project switch, including
+            -- a later post-save failure. Unrelated user project switches are not owned.
+            shared.project_id = created_id
+            local saved_ok, saved = pcall(pm.SaveProject, pm)
+            check(saved_ok and saved == true, "POST_SAVE_FAILED")
+            current = pm:GetCurrentProject()
+            check(current ~= nil and current:GetUniqueId() == created_id and current:GetName() == a.name,
+                "VERIFY_FAILED")
+            return "project_" .. created_id
+        end)
+        if not verified then
+            error(token == "POST_SAVE_FAILED" and token or "VERIFY_FAILED", 0)
+        end
+        return token
+    end
     return function(pm, project, request)
         if request.action == "get_render_status" then return finish.status(project, request) end
         if request.action == "get_timeline_summary" then return finish.summary(project, request) end
         check(request.confirm == true and text(request.project_id), "INVALID_ARGUMENTS")
         check(project:GetUniqueId() == request.project_id, "PROJECT_CHANGED")
         check(not project:IsRenderingInProgress(), "RENDERING")
+        if request.action == "create_project" then return create_project(pm, project, request) end
         local a, pool = request.arguments, project:GetMediaPool()
         check(type(a) == "table", "INVALID_ARGUMENTS")
         local timeline, asset, before, finishing, duplicate_source, source_layout, source_ids

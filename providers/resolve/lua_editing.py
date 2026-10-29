@@ -15,6 +15,7 @@ WRITE_ACTIONS = frozenset(
     {
         "import_media",
         "create_timeline",
+        "create_project",
         "duplicate_timeline",
         "append_clip",
         "quit_resolve",
@@ -28,7 +29,7 @@ def bounded_text(value: Any, label: str, limit: int = 128) -> str:
         or not value.strip()
         or value != value.strip()
         or len(value) > limit
-        or any(ord(c) < 32 for c in value)
+        or any(ord(c) < 32 or ord(c) == 127 for c in value)
     ):
         raise ValueError(f"{label} must be non-empty bounded text without controls.")
     return value
@@ -56,8 +57,9 @@ def validate_edit(
 
     if action == "import_media" and set(arguments) == {"paths"}:
         return {"paths": paths(arguments["paths"])}
-    if action == "create_timeline" and set(arguments) == {"name"}:
-        return {"name": bounded_text(arguments["name"], "Timeline name")}
+    if action in {"create_timeline", "create_project"} and set(arguments) == {"name"}:
+        label = "Project name" if action == "create_project" else "Timeline name"
+        return {"name": bounded_text(arguments["name"], label)}
     if action == "duplicate_timeline" and set(arguments) == {
         "name",
         "source_timeline_name",

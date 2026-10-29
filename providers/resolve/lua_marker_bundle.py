@@ -68,7 +68,8 @@ def build_marker_bridge(root: Path) -> str:
     bridge += """
 local exit_pm=api:GetProjectManager()
 local exit_project=exit_pm:GetCurrentProject()
-if exit_project and exit_project:GetUniqueId()==marker_project_id then
+local owned_project_id=shared.project_id or marker_project_id
+if exit_project and exit_project:GetUniqueId()==owned_project_id then
     local reason=ok and stop_reason or "error"
     pcall(function()
         exit_pm:ExportProject(exit_project:GetName(),

@@ -87,6 +87,50 @@ The backend adds `resolve_free_connection_status` and
 `resolve_free_pending_requests`; it exposes no raw Lua endpoint or public
 arbitrary UI automation tool.
 
+## Create a new project
+
+Use `resolve_lua_create_project` after connecting to an already-open saved
+project. It creates a project in the **current project-library folder** and
+leaves the new project active. It does not create a filesystem folder or copy
+the old timeline/media into the new project. Starting this action from an empty
+Project Manager is outside this backend's supported bootstrap path.
+
+First call `resolve_free_connection_status` or `resolve_lua_get_project` and
+keep the original `project.id`. Then pass the requested name, that original ID,
+a stable key and explicit confirmation:
+
+```json
+{
+  "name": "Нове відео",
+  "expected_project_id": "<original-project-id>",
+  "idempotency_key": "create-new-video-001",
+  "confirm": true
+}
+```
+
+The tool saves and exports a backup of the old project before creation. It
+refuses creation while rendering or if the original project identity changed.
+Existing exact names and names differing only in ASCII letter case are rejected
+before creation; Resolve may impose additional naming rules. It then creates,
+saves and verifies the new active project. The result's `project` contains the
+**new** identity; `previous_project_id` and `backup_path` identify the original.
+Use the new ID for subsequent edits to the new project.
+
+If creation times out or reports uncertain verification, the new project may
+already exist. Repeat only the same tool, name, **original** project ID and
+idempotency key to collect its original acknowledgement. Even after the active
+project changes, exact replay returns the recorded outcome without creating or
+switching a project again. Do not change to the new ID when replaying that old
+request, and do not use a new key to force another creation.
+
+This operation requires a freshly prepared session containing `create_project`
+support. Updating the Python package alone cannot change an old immutable menu
+bundle. Prepare a new runtime, install its managed menu script, change
+`--runtime` in the client, start the client first and launch the new script once
+from Resolve's Scripts menu. Do not add capability flags to an old session by
+hand. Automated Lua/API-double and MCP stdio checks are distinct from live
+Resolve acceptance; see the [manual matrix](manual-integration-testing.md).
+
 ## Session lifetime and recovery
 
 The native bridge has a renewable **600-second lease** by default. The running

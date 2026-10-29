@@ -116,6 +116,33 @@ def create_server(
         )
 
     @server.tool(annotations=write)
+    async def resolve_lua_create_project(
+        name: str,
+        expected_project_id: str,
+        idempotency_key: str,
+        confirm: bool = False,
+        timeout_seconds: float = 60,
+    ) -> dict[str, Any]:
+        """Create and activate a project in the current project-library folder.
+
+        Requires an open saved project and a freshly prepared bridge. Saves and
+        backs up the previous project before creation, refuses existing names,
+        then saves and verifies the new project. The result contains its new
+        project ID and previous_project_id. On timeout or replay use the SAME
+        original expected_project_id, name and key; never create again with a
+        new key. This does not create a project from the Project Manager screen.
+        """
+        return await asyncio.to_thread(
+            client.request,
+            "create_project",
+            timeout_seconds,
+            arguments={"name": name},
+            expected_project_id=expected_project_id,
+            confirm=confirm,
+            idempotency_key=idempotency_key,
+        )
+
+    @server.tool(annotations=write)
     async def resolve_lua_create_timeline(
         name: str,
         expected_project_id: str,

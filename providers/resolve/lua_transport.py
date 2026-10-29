@@ -140,7 +140,7 @@ def prepare(root: Path, media_roots: list[Path] | None = None) -> Path:
                 "session": session,
                 "protocol": 4,
                 "media_roots": roots,
-                "capabilities": ["quit_resolve"],
+                "capabilities": ["quit_resolve", "create_project"],
             }
         ),
         encoding="utf-8",
@@ -293,6 +293,11 @@ class LuaSnapshotClient:
         if action == "quit_resolve" and "quit_resolve" not in self.capabilities:
             raise ValueError(
                 "Quit requires a freshly prepared bridge with quit support."
+            )
+        if action == "create_project" and "create_project" not in self.capabilities:
+            raise ValueError(
+                "Project creation requires a freshly prepared bridge with "
+                "create_project support."
             )
         status_request = action == "get_render_status"
         summary_request = action == "get_timeline_summary"
@@ -534,6 +539,8 @@ class LuaSnapshotClient:
                             "AUDIO_ITEM_DISABLED",
                             "FAIRLIGHT_PRESET_MISSING_OR_AMBIGUOUS",
                             "INVALID_AUDIO_OPERATION",
+                            "CREATE_PROJECT_UNAVAILABLE",
+                            "PROJECT_LIST_UNAVAILABLE",
                         }:
                             receipt.reject(code)
                             acknowledged = True
@@ -550,7 +557,7 @@ class LuaSnapshotClient:
                         and accepted_response.exists()
                     ):
                         response = accepted_response
-                    if action == "prepare_render" or detail_request:
+                    if action in {"prepare_render", "create_project"} or detail_request:
                         matches = list(self.root.glob(f"{command_id}.ok_*.drp"))
                         if not matches:
                             raise FileNotFoundError("Waiting for typed response.")
@@ -564,7 +571,21 @@ class LuaSnapshotClient:
                     time.sleep(0.1)
                     continue
                 if write:
-                    if project["id"] != expected_project_id:
+                    if action == "create_project":
+                        created = re.fullmatch(
+                            r"project_([a-zA-Z0-9-]{1,128})", token or ""
+                        )
+                        if (
+                            not created
+                            or project["id"] != created[1]
+                            or project["id"] == expected_project_id
+                            or project["name"] != normalized["name"]
+                        ):
+                            raise BridgeProtocolError(
+                                "Project creation response identity or name mismatch; "
+                                "outcome is uncertain."
+                            )
+                    elif project["id"] != expected_project_id:
                         raise BridgeProtocolError(
                             "Write response belongs to another project; "
                             "outcome is uncertain."
@@ -586,6 +607,8 @@ class LuaSnapshotClient:
                         if action in FINISH_ACTIONS
                         else "ResolveLuaEditing",
                     }
+                    if action == "create_project":
+                        result["previous_project_id"] = expected_project_id
                     if action == "prepare_render":
                         ranged = "start_frame" in normalized
                         job_match = re.fullmatch(
