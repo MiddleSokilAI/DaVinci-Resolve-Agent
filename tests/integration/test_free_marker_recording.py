@@ -7,6 +7,7 @@ track mutations, ZIP responses, receipts and restart replay are exercised.
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import threading
 import time
@@ -18,10 +19,11 @@ from typing import Any
 import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mcp.types import CallToolResult, TextContent
+from mcp.types import CallToolResult
 
+from providers.resolve.lua_editing import WriteReceipt
 from providers.resolve.lua_transport import read_project_snapshot
-from providers.resolve.marker_transport import prepare_marker
+from providers.resolve.marker_transport import MarkerSlot, prepare_marker
 
 PROJECT_ID = "recording-test-project"
 TRACK_NAME = "Український голос RAW"
@@ -177,6 +179,9 @@ def test_stdio_recording_preparation_and_restart_replay(
             "timeout_seconds": REQUEST_TIMEOUT_SECONDS,
         }
         created: dict[str, Any] | None = None
+        original_receipt: WriteReceipt | None = None
+        original_command: str | None = None
+        withheld_response: Path | None = None
         async with (
             stdio_client(parameters) as (reader, writer),
             ClientSession(reader, writer) as session,
@@ -287,12 +292,58 @@ def test_stdio_recording_preparation_and_restart_replay(
             if late_ack:
                 assert reached_ack, "Timeout must follow native track creation"
                 assert outcome.is_error
-                assert any(
-                    isinstance(part, TextContent)
-                    and "No fresh native marker response within the timeout."
-                    in part.text
-                    for part in outcome.content
-                ), outcome.content
+                assert ack_started.is_set() and not release_ack.is_set()
+                # MCP may mask exception prose. The durable mailbox proves
+                # that this was a published, mutated request awaiting its ACK.
+                expected_arguments = {
+                    "timeline_name": "Voice",
+                    "recording": {
+                        "operation": "ensure_mono",
+                        "track_name": TRACK_NAME,
+                        "expected_audio_track_count": 1,
+                    },
+                }
+                original_receipt = WriteReceipt(
+                    root, "ensure-voice-track", "set_clip_properties", PROJECT_ID,
+                    expected_arguments,
+                )
+                assert list((root / "receipts").glob("*.json")) == [
+                    original_receipt.path
+                ]
+                pending = json.loads(
+                    original_receipt.path.read_text(encoding="utf-8")
+                )
+                assert pending["status"] == "pending"
+                assert pending["fingerprint"] == original_receipt.fingerprint
+                original_command = pending["command_id"]
+                assert isinstance(original_command, str)
+                slot = MarkerSlot.existing(
+                    root, live["session"], original_command, live["max_payload_bytes"]
+                )
+                assert slot.request == {
+                    "session": live["session"],
+                    "id": original_command,
+                    "action": "set_clip_properties",
+                    "expires": slot.owner["expires"],
+                    "confirm": True,
+                    "project_id": PROJECT_ID,
+                    "arguments": expected_arguments,
+                }
+                response_exports = [
+                    Path(value) for action, value in events
+                    if action == "export" and Path(value).name.startswith(
+                        f"{original_command}.ok_recording_ensure_mono_"
+                    )
+                ]
+                assert len(response_exports) == 1
+                withheld_response = response_exports[0]
+                assert not withheld_response.exists()
+                assert not list(root.glob(f"{original_command}.error_*.drp"))
+                assert read_project_snapshot(
+                    root / f"{original_command}.before.drp"
+                )["id"] == PROJECT_ID
+                assert events.count(("add", "mono")) == 1
+                assert events.count(("rename", TRACK_NAME)) == 1
             else:
                 created = unpack(outcome)
 
@@ -319,6 +370,17 @@ def test_stdio_recording_preparation_and_restart_replay(
             assert replay["readback_verified_by"] == "ResolveLuaRecording"
             if late_ack:
                 assert replay["reconciled_original_command"] is True
+                assert original_receipt is not None and original_command is not None
+                assert Path(replay["response_path"]) == withheld_response
+                assert Path(replay["backup_path"]) == root / (
+                    f"{original_command}.before.drp"
+                )
+                reconciled = json.loads(
+                    original_receipt.path.read_text(encoding="utf-8")
+                )
+                assert reconciled["status"] == "completed"
+                assert reconciled["command_id"] == original_command
+                assert reconciled["fingerprint"] == original_receipt.fingerprint
             else:
                 assert created is not None
                 assert replay["response_path"] == created["response_path"]

@@ -135,6 +135,10 @@ no-op does not toggle the control and reports `save_status="not_needed"`.
 
 ## Recover an interrupted change
 
+Some MCP SDK versions return a generic tool error without the internal exception
+text. Use `resolve_free_pending_requests` and the original receipt to inspect the
+outcome. A generic error does not establish that no change occurred.
+
 Repeat the original tool with **identical arguments and idempotency key**.
 A completed receipt returns its original result. A pending receipt invokes only
 the corresponding getter; it never repeats a toggle, patch or arm action.
