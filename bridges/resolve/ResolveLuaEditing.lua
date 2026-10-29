@@ -4,7 +4,8 @@ return function(api, root, media_roots, shared)
         if not condition then error(code, 0) end
     end
     local function text(value)
-        return type(value) == "string" and #value > 0 and #value <= 512 and not value:find("%c")
+        -- C locale classes can mistake UTF-8 bytes for controls on Windows.
+        return type(value) == "string" and #value > 0 and #value <= 512 and not value:find("[%z\1-\31\127]")
     end
     local function normalized(path)
         return path:gsub("\\", "/"):lower():gsub("/+$", "")

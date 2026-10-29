@@ -303,3 +303,60 @@ def test_metadata_or_changed_bridge_fails_closed(tmp_path: Path) -> None:
     bridge.write_text(bridge.read_text().replace("while true do", "while false do"))
     with pytest.raises(ValueError, match="template anchor"):
         build_marker_bridge(root)
+
+
+@pytest.mark.parametrize("locale_name", ["C", "English_United States.1252"])
+@pytest.mark.parametrize(
+    "name", ["Нова доріжка тесту", "Bad\x00", "Bad\x1f", "Bad\x7f"]
+)
+def test_native_edit_text_is_utf8_safe_and_rejects_ascii_controls(
+    tmp_path: Path,
+    locale_name: str,
+    name: str,
+) -> None:
+    root = tmp_path / "runtime"
+    script = prepare_runtime(root)
+    h = Harness(root.as_posix())
+    h.lua.execute("""
+        local timeline=nil
+        local pool={CreateEmptyTimeline=function(_,name)
+            created_name=name
+            timeline={GetName=function() return name end,
+                      GetUniqueId=function() return 'timeline-id' end}
+            return timeline
+        end}
+        local project={GetName=function() return 'Voice' end,
+            GetUniqueId=function() return 'project-id' end,
+            GetMediaPool=function() return pool end,
+            GetTimelineCount=function() return timeline and 1 or 0 end,
+            GetTimelineByIndex=function() return timeline end,
+            IsRenderingInProgress=function() return false end}
+        local pm={GetCurrentProject=function() return project end,
+            SaveProject=function() return true end,
+            ExportProject=function(_,_,path) return py_export(path) end}
+        resolve={GetProjectManager=function() return pm end}
+    """)
+    setlocale = h.lua.eval("os.setlocale")
+    previous = setlocale(None, "ctype")
+    if not setlocale(locale_name, "ctype"):
+        pytest.skip(f"Native C locale {locale_name} is unavailable")
+    try:
+        request = envelope(
+            confirm=True, project_id="project-id", arguments={"name": name}
+        )
+        request["action"] = "create_timeline"
+        h.publish(request)
+        h.lua.execute(script)
+    finally:
+        setlocale(previous, "ctype")
+    if name.startswith("Bad"):
+        assert h.lua.globals().created_name is None
+        assert (
+            root.as_posix() + "/" + COMMAND + ".error_INVALID_ARGUMENTS.drp"
+            in h.exports
+        )
+        assert not any(path.endswith(".before.drp") for path in h.exports)
+    else:
+        assert h.lua.globals().created_name == name
+        assert root.as_posix() + "/" + COMMAND + ".before.drp" in h.exports
+        assert root.as_posix() + "/" + COMMAND + ".ok.drp" in h.exports
