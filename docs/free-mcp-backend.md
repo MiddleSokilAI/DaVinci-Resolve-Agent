@@ -68,6 +68,12 @@ Verify MCP `initialize` and `tools/list`, then call
 establish connection health and current project identity. A successful stdio
 handshake or lease renewal alone does not prove Resolve is connected.
 
+Use `resolve_free_startup_status` for local runtime/menu/recovery evidence and
+an ordered manual handoff. Known terminal lifecycle exports are reported without
+another native request; unknown failures retain their uncertainty. Optional
+process metadata is a host hint only. See [startup diagnostics](free-startup.md)
+for cold-start limits, session mismatch and the standalone `--diagnose` command.
+
 ## Configure the client's actual scope
 
 For Codex, use `~/.codex/config.toml` for user scope or the trusted project's

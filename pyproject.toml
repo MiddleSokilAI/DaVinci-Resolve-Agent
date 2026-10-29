@@ -57,6 +57,7 @@ version = {attr = "agent.__version__"}
   "ResolveFairlightUI.ps1",
   "ResolveFairlightCore.psm1",
   "ResolveFairlightPatch.psm1",
+  "ResolveHostMetadata.ps1",
 ]
 config = [
   "*.toml",

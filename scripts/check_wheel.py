@@ -60,6 +60,9 @@ REQUIRED_MEMBERS: Final = frozenset(
         "providers/resolve/fairlight_ui_service.py",
         "providers/resolve/windows_ui_common.py",
         "mcp_server/fairlight.py",
+        "providers/resolve/startup_diagnostics.py",
+        "providers/resolve/windows_host.py",
+        "providers/resolve/ResolveHostMetadata.ps1",
         "bridges/resolve/ResolveLuaRecording.lua",
         "transports/filesystem.py",
     }
