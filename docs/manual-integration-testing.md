@@ -1129,3 +1129,34 @@ behavior; mocked checks are not presented as live input-selection acceptance.
 Unlock the interactive session, bring Resolve forward, then repeat the bounded
 current-device/no-op check before marking that row verified. Keep the actual
 input patch and signal/processing checks separate from MCP liveness.
+
+### Scoped Fairlight UI controls — 2026-10-29, live pending
+
+The recording API extension adds seven typed MCP tools for track/bus master EQ
+and Dynamics, mono input patching and individual track arm. This entry supersedes
+the earlier `unsupported` classification for those implemented controls; it
+does **not** upgrade their live status to `verified`.
+
+| Operation | Status | Offline evidence / live acceptance still required |
+| --- | --- | --- |
+| MCP tool discovery | Offline verified | 50 tools through the real stdio client with native API doubles; no live Resolve call in this extension |
+| Track/bus master EQ | `pending` | Typed boolean, exact target fencing, physical checkbox action and reopened state; real DSP/persistence acceptance still required |
+| Track/bus master Dynamics | `pending` | Local OCR and positive toggle patterns with synthetic raster fixtures; real rendered layout/state acceptance still required |
+| Mono track input patch | `pending` | Strict list/table source channel and destination assignment models, single-row selection and reopened assignment; actual Resolve list accessibility still required |
+| Track R arm | `pending` | Native name/index fence, scoped row geometry and positive R-state fixtures; actual row/action acceptance still required |
+| Exact-key recovery | Offline verified | Completed replay; uncertain changes invoke getters only; mismatches retain pending receipts and original UI evidence |
+| Other effects/inserts and audio quality | `unsupported` / not assessed | No insert bypass, audio capture or listening test |
+
+Live Windows UI testing was explicitly deferred by the operator. No live UI
+gesture, screenshot capture, microphone recording or audio-processing change was
+performed for this extension. Target profile: English Resolve 21.1 on Windows;
+unknown layout, missing local OCR, lost foreground, moving cursor, ambiguous
+target or non-stopped transport must fail closed. `available=true` means the
+host opted in on Windows, not that this profile has passed live acceptance.
+
+Before changing any row above to `verified`, collect the canonical sanitized
+evidence: exact OS/Python/Resolve edition/build and commit, project/track identity
+fences, before/after master/patch/R state, reopened readback, saved-project
+persistence, no-op and uncertain recovery, plus final Stop on / Play and Record
+off. Exercise mixed-DPI placement and refuse a wrong/ambiguous target before
+mutation. Keep private screen media, device names and project backups local.

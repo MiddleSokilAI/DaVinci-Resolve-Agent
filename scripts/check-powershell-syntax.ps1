@@ -16,7 +16,8 @@ try {
     }
 
     $scriptFiles = @(
-        Get-ChildItem -LiteralPath $resolvedPath -Filter "*.ps1" -File |
+        Get-ChildItem -LiteralPath $resolvedPath -File |
+            Where-Object { $_.Extension -in @('.ps1', '.psm1') } |
             Sort-Object FullName
     )
     if ($scriptFiles.Count -eq 0) {

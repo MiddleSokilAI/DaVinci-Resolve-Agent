@@ -78,6 +78,9 @@ jobs:
       - name: Parse utility PowerShell scripts without executing them
         run: .\scripts\check-powershell-syntax.ps1 -ScriptsPath .\scripts
 
+      - name: Parse bundled Windows adapters without executing them
+        run: .\scripts\check-powershell-syntax.ps1 -ScriptsPath .\providers\resolve
+
   wheel-package:
     name: Wheel package
     runs-on: windows-latest

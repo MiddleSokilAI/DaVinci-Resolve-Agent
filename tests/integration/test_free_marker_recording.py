@@ -7,6 +7,7 @@ track mutations, ZIP responses, receipts and restart replay are exercised.
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import threading
 import time
@@ -20,11 +21,16 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import CallToolResult
 
+from providers.resolve.lua_editing import WriteReceipt
 from providers.resolve.lua_transport import read_project_snapshot
-from providers.resolve.marker_transport import prepare_marker
+from providers.resolve.marker_transport import MarkerSlot, prepare_marker
 
 PROJECT_ID = "recording-test-project"
 TRACK_NAME = "Український голос RAW"
+# Marker requests stage many individual files. The integration test exercises
+# the protocol, not a filesystem-speed limit on a busy Windows test host.
+REQUEST_TIMEOUT_SECONDS = 30
+ACK_RELEASE_TIMEOUT_SECONDS = 3 * REQUEST_TIMEOUT_SECONDS
 NATIVE = """
 local tracks={{name='Audio 1',subtype='stereo'}}
 local page='fairlight'
@@ -118,7 +124,9 @@ def test_stdio_recording_preparation_and_restart_replay(
         events.append(("backup" if path.endswith(".before.drp") else "export", path))
         if late_ack and ".ok_recording_ensure_mono_" in path:
             ack_started.set()
-            assert release_ack.wait(30), "Delayed recording ACK was never released"
+            assert release_ack.wait(ACK_RELEASE_TIMEOUT_SECONDS), (
+                "Delayed recording ACK was never released"
+            )
         with zipfile.ZipFile(path, "w") as archive:
             archive.writestr(
                 "project.xml",
@@ -168,16 +176,19 @@ def test_stdio_recording_preparation_and_restart_replay(
             "expected_project_id": PROJECT_ID,
             "idempotency_key": "ensure-voice-track",
             "confirm": True,
-            "timeout_seconds": 2 if late_ack else 5,
+            "timeout_seconds": REQUEST_TIMEOUT_SECONDS,
         }
         created: dict[str, Any] | None = None
+        original_receipt: WriteReceipt | None = None
+        original_command: str | None = None
+        withheld_response: Path | None = None
         async with (
             stdio_client(parameters) as (reader, writer),
             ClientSession(reader, writer) as session,
         ):
             await session.initialize()
             tools = {tool.name: tool for tool in (await session.list_tools()).tools}
-            assert len(tools) == 43
+            assert len(tools) == 50
             for name in (
                 "resolve_lua_inspect_audio_track",
                 "resolve_lua_ensure_mono_audio_track",
@@ -185,6 +196,13 @@ def test_stdio_recording_preparation_and_restart_replay(
                 "resolve_lua_set_recording_media_root",
                 "resolve_free_windows_recording_status",
                 "resolve_free_select_audio_input",
+                "resolve_free_get_audio_processing",
+                "resolve_free_set_audio_eq",
+                "resolve_free_set_audio_dynamics",
+                "resolve_free_get_track_record_arm",
+                "resolve_free_set_track_record_arm",
+                "resolve_free_get_audio_input_patch",
+                "resolve_free_patch_audio_input",
             ):
                 assert name in tools
             properties = tools["resolve_lua_ensure_mono_audio_track"].input_schema[
@@ -195,10 +213,55 @@ def test_stdio_recording_preparation_and_restart_replay(
                 "expected_audio_track_count"
                 in tools["resolve_lua_ensure_mono_audio_track"].input_schema["required"]
             )
-            live = unpack(await session.call_tool("resolve_free_connection_status", {}))
-            assert live["connected"] and live["recording_native_api"]
+            live = unpack(
+                await session.call_tool(
+                    "resolve_free_connection_status",
+                    {"timeout_seconds": REQUEST_TIMEOUT_SECONDS},
+                )
+            )
+            assert live["connected"] and live["recording_native_api"], live
             assert live["recording_readiness"] == "not_assessed"
             original = list(events)
+            for name, extras in (
+                (
+                    "resolve_free_set_audio_eq",
+                    {"target_name": TRACK_NAME, "enabled": False},
+                ),
+                (
+                    "resolve_free_set_audio_dynamics",
+                    {"target_name": TRACK_NAME, "enabled": False},
+                ),
+                (
+                    "resolve_free_set_track_record_arm",
+                    {"track_name": TRACK_NAME, "armed": True},
+                ),
+                (
+                    "resolve_free_patch_audio_input",
+                    {
+                        "track_name": TRACK_NAME,
+                        "source_name": "USB Microphone",
+                        "source_channel": 1,
+                    },
+                ),
+            ):
+                schema = tools[name].input_schema
+                assert schema["properties"]["confirm"]["default"] is False
+                assert "expected_project_id" in schema["required"]
+                assert "idempotency_key" in schema["required"]
+                tool_annotations = tools[name].annotations
+                assert tool_annotations is not None
+                assert tool_annotations.read_only_hint is False
+                refused_ui = await session.call_tool(
+                    name,
+                    {
+                        "timeline_name": "Voice",
+                        "expected_track_index": 2,
+                        "expected_project_id": PROJECT_ID,
+                        "idempotency_key": name,
+                        **extras,
+                    },
+                )
+                assert refused_ui.is_error and events == original
             refused = await session.call_tool(
                 "resolve_lua_ensure_mono_audio_track",
                 {**ensure, "confirm": False},
@@ -211,17 +274,76 @@ def test_stdio_recording_preparation_and_restart_replay(
                         "timeline_name": "Voice",
                         "track_name": TRACK_NAME,
                         "expected_project_id": PROJECT_ID,
-                        "timeout_seconds": 5,
+                        "timeout_seconds": REQUEST_TIMEOUT_SECONDS,
                     },
                 )
             )
             assert inspected["recording"]["track"]["found"] is False
-            outcome = await session.call_tool(
-                "resolve_lua_ensure_mono_audio_track", ensure
+            pending_ensure = asyncio.create_task(
+                session.call_tool("resolve_lua_ensure_mono_audio_track", ensure)
             )
             if late_ack:
+                # Hold the native response only after track creation. A slow
+                # marker publication must not masquerade as a lost ACK.
+                reached_ack = await asyncio.to_thread(
+                    ack_started.wait, REQUEST_TIMEOUT_SECONDS
+                )
+            outcome = await pending_ensure
+            if late_ack:
+                assert reached_ack, "Timeout must follow native track creation"
                 assert outcome.is_error
-                assert ack_started.is_set(), "Timeout must follow native track creation"
+                assert ack_started.is_set() and not release_ack.is_set()
+                # MCP may mask exception prose. The durable mailbox proves
+                # that this was a published, mutated request awaiting its ACK.
+                expected_arguments = {
+                    "timeline_name": "Voice",
+                    "recording": {
+                        "operation": "ensure_mono",
+                        "track_name": TRACK_NAME,
+                        "expected_audio_track_count": 1,
+                    },
+                }
+                original_receipt = WriteReceipt(
+                    root, "ensure-voice-track", "set_clip_properties", PROJECT_ID,
+                    expected_arguments,
+                )
+                assert list((root / "receipts").glob("*.json")) == [
+                    original_receipt.path
+                ]
+                pending = json.loads(
+                    original_receipt.path.read_text(encoding="utf-8")
+                )
+                assert pending["status"] == "pending"
+                assert pending["fingerprint"] == original_receipt.fingerprint
+                original_command = pending["command_id"]
+                assert isinstance(original_command, str)
+                slot = MarkerSlot.existing(
+                    root, live["session"], original_command, live["max_payload_bytes"]
+                )
+                assert slot.request == {
+                    "session": live["session"],
+                    "id": original_command,
+                    "action": "set_clip_properties",
+                    "expires": slot.owner["expires"],
+                    "confirm": True,
+                    "project_id": PROJECT_ID,
+                    "arguments": expected_arguments,
+                }
+                response_exports = [
+                    Path(value) for action, value in events
+                    if action == "export" and Path(value).name.startswith(
+                        f"{original_command}.ok_recording_ensure_mono_"
+                    )
+                ]
+                assert len(response_exports) == 1
+                withheld_response = response_exports[0]
+                assert not withheld_response.exists()
+                assert not list(root.glob(f"{original_command}.error_*.drp"))
+                assert read_project_snapshot(
+                    root / f"{original_command}.before.drp"
+                )["id"] == PROJECT_ID
+                assert events.count(("add", "mono")) == 1
+                assert events.count(("rename", TRACK_NAME)) == 1
             else:
                 created = unpack(outcome)
 
@@ -234,7 +356,7 @@ def test_stdio_recording_preparation_and_restart_replay(
             replay = unpack(
                 await session.call_tool(
                     "resolve_lua_ensure_mono_audio_track",
-                    {**ensure, "timeout_seconds": 5},
+                    {**ensure, "timeout_seconds": REQUEST_TIMEOUT_SECONDS},
                 )
             )
             assert replay["replayed"] is (not late_ack)
@@ -248,13 +370,24 @@ def test_stdio_recording_preparation_and_restart_replay(
             assert replay["readback_verified_by"] == "ResolveLuaRecording"
             if late_ack:
                 assert replay["reconciled_original_command"] is True
+                assert original_receipt is not None and original_command is not None
+                assert Path(replay["response_path"]) == withheld_response
+                assert Path(replay["backup_path"]) == root / (
+                    f"{original_command}.before.drp"
+                )
+                reconciled = json.loads(
+                    original_receipt.path.read_text(encoding="utf-8")
+                )
+                assert reconciled["status"] == "completed"
+                assert reconciled["command_id"] == original_command
+                assert reconciled["fingerprint"] == original_receipt.fingerprint
             else:
                 assert created is not None
                 assert replay["response_path"] == created["response_path"]
             repeated = unpack(
                 await session.call_tool(
                     "resolve_lua_ensure_mono_audio_track",
-                    {**ensure, "timeout_seconds": 5},
+                    {**ensure, "timeout_seconds": REQUEST_TIMEOUT_SECONDS},
                 )
             )
             assert repeated["replayed"] is True
@@ -268,7 +401,7 @@ def test_stdio_recording_preparation_and_restart_replay(
                         "expected_project_id": PROJECT_ID,
                         "idempotency_key": "seek-voice-start",
                         "confirm": True,
-                        "timeout_seconds": 5,
+                        "timeout_seconds": REQUEST_TIMEOUT_SECONDS,
                     },
                 )
             )
@@ -282,7 +415,7 @@ def test_stdio_recording_preparation_and_restart_replay(
                         "expected_project_id": PROJECT_ID,
                         "idempotency_key": "voice-media-root",
                         "confirm": True,
-                        "timeout_seconds": 5,
+                        "timeout_seconds": REQUEST_TIMEOUT_SECONDS,
                     },
                 )
             )
@@ -293,7 +426,7 @@ def test_stdio_recording_preparation_and_restart_replay(
                     {
                         "timeline_name": "Voice",
                         "expected_project_id": PROJECT_ID,
-                        "timeout_seconds": 5,
+                        "timeout_seconds": REQUEST_TIMEOUT_SECONDS,
                     },
                 )
             )

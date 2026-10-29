@@ -52,7 +52,12 @@ version = {attr = "agent.__version__"}
 
 [tool.setuptools.package-data]
 "bridges.resolve" = ["*.lua"]
-"providers.resolve" = ["ResolveRecordingUI.ps1"]
+"providers.resolve" = [
+  "ResolveRecordingUI.ps1",
+  "ResolveFairlightUI.ps1",
+  "ResolveFairlightCore.psm1",
+  "ResolveFairlightPatch.psm1",
+]
 config = [
   "*.toml",
   "recipes/*.json",

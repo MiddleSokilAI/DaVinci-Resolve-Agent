@@ -202,7 +202,12 @@ The backend offers the existing typed Lua editing and native-audio operations,
 subject to their per-action guards and installed Resolve API support. Its new
 transport does not add native APIs for physical microphone selection, input
 patching, record arming, or track/bus EQ, Dynamics and all effect inserts. Those
-application settings require a separately verified GUI workflow; a mono track,
+application settings use a separate opt-in Windows adapter. Typed tools now
+cover physical input selection, track/bus master EQ and Dynamics, one input
+channel to a mono track, and per-track arm. New Fairlight controls are
+**live-pending**, with offline contract and simulated UI tests only. Insert
+effects remain unsupported. See the [recording guide](recording-preparation.md)
+for setup, limits and recovery. A mono track,
 fresh status response or successful native-audio command does not establish that
 the microphone is routed or its processing bypassed. See
 [native audio limits](native-audio.md).

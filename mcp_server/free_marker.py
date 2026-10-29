@@ -16,8 +16,10 @@ from typing import Any
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
+from mcp_server.fairlight import register_fairlight_tools
 from mcp_server.lua_experimental import create_server as create_lua_server
 from mcp_server.windows_recording import register_windows_recording_tools
+from providers.resolve.fairlight_ui_service import FairlightUIService
 from providers.resolve.lua_transport import LuaSnapshotClient
 from providers.resolve.recording_ui_service import RecordingUIService
 
@@ -53,8 +55,11 @@ def create_server(
             "idempotency keys. After a timeout reconcile the original receipt; "
             "never resubmit a write with a new key. Named mono tracks, sample-rate "
             "inspection, seek and project media roots use guarded native tools. "
-            "Physical input selection has a separate opt-in Windows UI adapter. "
-            "Input patching, record arm and track/bus processing remain unsupported. "
+            "Physical input selection and scoped Fairlight EQ/Dynamics, mono input "
+            "patching and track arm use opt-in Windows UI adapters. New Fairlight "
+            "controls await live Windows acceptance. "
+            "Effect inserts remain unsupported. "
+            "No tool starts recording. "
             "Native project exports are local responses and can be expensive."
         ),
         excluded_tools=frozenset({"resolve_lua_reload_modules"}),
@@ -62,6 +67,10 @@ def create_server(
     client = LuaSnapshotClient(root)
     ui_service = RecordingUIService(root, client, enabled=enable_windows_recording_ui)
     register_windows_recording_tools(server, ui_service)
+    fairlight_service = FairlightUIService(
+        root, client, enabled=enable_windows_recording_ui,
+    )
+    register_fairlight_tools(server, fairlight_service)
 
     @server.tool(
         annotations=ToolAnnotations(
@@ -86,11 +95,17 @@ def create_server(
             "max_payload_bytes": metadata.get("max_payload_bytes", 4096),
             "unsupported_recording_controls": [
                 control for control in UNSUPPORTED_RECORDING_CONTROLS
-                if control != "physical_input_device"
-                or not ui_service.adapter.capabilities().get("available")
+                if not (
+                    control == "physical_input_device"
+                    and ui_service.adapter.capabilities().get("available")
+                ) and not (
+                    control in fairlight_service.adapter.capabilities()["controls"]
+                    and fairlight_service.adapter.capabilities().get("available")
+                )
             ],
             "recording_native_api": "recording_api_v1" in client.capabilities,
             "recording_windows_ui": ui_service.adapter.capabilities(),
+            "fairlight_windows_ui": fairlight_service.adapter.capabilities(),
             "recording_readiness": "not_assessed",
         }
         try:

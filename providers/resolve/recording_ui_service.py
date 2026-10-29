@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-from contextlib import suppress
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -15,6 +13,7 @@ from providers.resolve.windows_recording import (
     WindowsRecordingAdapter,
     WindowsRecordingError,
 )
+from providers.resolve.windows_ui_common import hold_ui_mailbox, native_project
 
 
 class RecordingUIService:
@@ -28,11 +27,7 @@ class RecordingUIService:
 
     def _project(self, expected: str) -> dict[str, str]:
         """Require a fresh native identity before trusting the title-scoped UI."""
-        bounded_text(expected, "Expected project ID")
-        project: dict[str, str] = self.client.request("get_current_project")["project"]
-        if project["id"] != expected:
-            raise ValueError("Active native project identity changed.")
-        return project
+        return native_project(self.client, expected)
 
     def status(self, expected_project_id: str) -> dict[str, Any]:
         """Inspect live transport state; never equate it with recording readiness."""
@@ -78,11 +73,7 @@ class RecordingUIService:
                 if replay is not None:
                     return replay
         project = self._project(expected_project_id)
-        lock = self.root / "client.lock"
-        owner = f"{os.getpid()}:windows-ui:{uuid4().hex}"
-        with lock.open("x", encoding="ascii") as stream:
-            stream.write(owner)
-        try:
+        with hold_ui_mailbox(self.root):
             # WriteReceipt.begin refuses earlier uncertain native or GUI writes.
             if not reconcile:
                 receipt.begin(uuid4().hex)
@@ -109,10 +100,6 @@ class RecordingUIService:
                 if not reconcile and not error.uncertain:
                     receipt.reject(error.code)
                 raise
-        finally:
-            with suppress(FileNotFoundError):
-                if lock.read_text(encoding="ascii") == owner:
-                    lock.unlink()
         self._project(expected_project_id)
         result = {
             "status": "completed", "action": "windows_select_audio_input",

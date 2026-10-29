@@ -107,10 +107,13 @@ required = false
 він не описує marker-сеанс. Успішний stdio handshake або lease самі по собі
 не доводять зв'язку з Resolve.
 
-**Fairlight:** цей пакет поки не підтримує вибір фізичного input device,
-patch input, record arm і перевірене вимкнення track/bus EQ, Dynamics та
-всіх effects. Для цих app settings потрібне окреме перевірене керування GUI;
+**Fairlight:** окремий opt-in Windows UI адаптер надає вибір фізичного input
+device, patch одного входу до моно доріжки, track R і master EQ/Dynamics на
+доріжці чи шині. Нові Fairlight команди мають статус **live-pending**: офлайн
+перевірки не підтверджують роботу в реальному інтерфейсі. Insert effects та інша
+обробка не охоплені. Нативний marker transport не додає цих app APIs;
 підготовлена монодоріжка чи успішна команда MCP не означає готовність до запису.
+Налаштування, приклади та відновлення — у [recording guide](recording-preparation.md).
 Додатковий [capture diagnostic](../scripts/capture-resolve-window.ps1) потребує
 явної згоди оператора на UIA/GDI capture і лише знімає визначене вікно Resolve;
 це не публічний MCP UI tool і не загальний спосіб керування застосунком.
