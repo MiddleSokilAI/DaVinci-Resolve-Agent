@@ -188,7 +188,7 @@ def test_stdio_recording_preparation_and_restart_replay(
         ):
             await session.initialize()
             tools = {tool.name: tool for tool in (await session.list_tools()).tools}
-            assert len(tools) == 51
+            assert len(tools) == 52
             for name in (
                 "resolve_lua_inspect_audio_track",
                 "resolve_lua_ensure_mono_audio_track",

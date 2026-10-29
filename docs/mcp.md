@@ -1,5 +1,45 @@
 # Налаштування MCP-клієнта
 
+## Фактична доступність workflow
+
+Перед вибором workflow викликайте `video_agent_capabilities`. Інструмент є в
+Python, static Free-marker та managed Free-marker endpoints і використовує
+спільну backend-specific карту workflow. Він не переносить Python receipts у
+Lua та не запускає монтаж.
+
+- `verify_connection=false` за замовчуванням читає лише локальні дані. Наявність
+  tool у каталозі, heartbeat або watcher `connected` не підтверджують native API.
+- `verify_connection=true` додає один свіжий native read поточного проєкту;
+  не відкриває проєкти, не запускає Windows UI та не повторює mutation.
+- `available` означає готовність викликати workflow з його звичайними input,
+  confirmation, project identity, backup та live preflight guards. Це не доказ
+  сумісності кожного API чи успішного монтажу конкретних матеріалів.
+- `partial` повертає `alternative_tools`, але `supported=false` та
+  `available=false`: наприклад, Lua ripple-cut не є реалізацією Python
+  `apply_synchronized_pause_compaction` і не приймає його receipts.
+- `unverified` вимагає свіжого native read або окремої live acceptance;
+  `blocked` повідомляє про disconnect, відсутні media roots, зайнятий runtime,
+  pending writes чи невирішений project-open; `unsupported` означає відсутність
+  потрібного adapter/tool або несумісну session capability.
+
+Fairlight EQ/Dynamics залишаються `unverified`, доки adapter повідомляє
+`live_verification=pending`, навіть за наявності Windows opt-in. Запуск запису
+та effect inserts не заявляються як підтримані. Технічний ranking дублів не
+доводить редакторську якість, а gain/limiter не є denoise чи de-reverb.
+
+Managed endpoint повертає capability report навіть без active session; він
+не відправляє запит у catalogue runtime та не запускає bootstrap. За наявності
+active session увесь report прив'язаний до однієї generation. Pending host
+project-open блокує заявлену доступність mutations так само, як їх реальний
+dispatch. Результат не кешується як гарантія майбутніх writes.
+
+Встановлений локальний агент має відповідати актуальному
+`Seiger/DaVinci-Resolve-Agent:main`. Робочі гілки та PR перевіряються в ізольованих
+test environments і не встановлюються в робочий агент до merge. Перед оновленням
+звіряйте remote SHA, дерево package-файлів і installation provenance; повторно
+перевіряйте remote після збірки. Не перезапускайте Resolve або активну marker
+session для звичайного оновлення discovery-коду.
+
 ## Створення проєкту
 
 `resolve_create_project(name, confirm_create=true)` створює, вибирає та

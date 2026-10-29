@@ -85,7 +85,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.mypy]
 python_version = "3.10"
 strict = true
-exclude = ["^build/"]
+exclude = ["^build/", "^runtime/"]
 files = [
   "agent",
   "bridges",

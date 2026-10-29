@@ -1,5 +1,9 @@
 # Contracts
 
+`workflow-capabilities.schema.json` separates backend workflow support from
+point-in-time availability. Registered tools and partial alternatives cannot
+establish a native connection or enable an unsupported workflow apply.
+
 `take-selection.schema.json` defines M54 path-redacted fixed-policy technical
 and script-aware dialogue rankings that always require review.
 `take-selection-review.schema.json` binds

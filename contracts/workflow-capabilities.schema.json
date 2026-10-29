@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://davinci-resolve-agent.local/contracts/workflow-capabilities.schema.json",
+  "title": "Backend-specific workflow availability",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "backend", "session", "connected", "evidence", "project", "mutation_blocker", "registered_tools", "workflows", "limitations"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "backend": {"enum": ["python", "free_marker"]},
+    "session": {"type": ["string", "null"]},
+    "connected": {"type": ["boolean", "null"]},
+    "evidence": {"type": "string", "minLength": 1, "maxLength": 64},
+    "project": {"type": ["object", "null"]},
+    "mutation_blocker": {"type": ["string", "null"]},
+    "registered_tools": {"$ref": "#/$defs/tools"},
+    "limitations": {"type": "array", "items": {"type": "string"}},
+    "workflows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["workflow", "supported", "available", "status", "reason", "tools", "missing_tools", "required_native_capabilities", "alternative_tools", "requires_confirmation", "scope"],
+        "properties": {
+          "workflow": {"type": "string", "pattern": "^[a-z_]+$"},
+          "supported": {"type": "boolean"},
+          "available": {"type": "boolean"},
+          "status": {"enum": ["available", "partial", "unsupported", "unverified", "blocked"]},
+          "reason": {"type": "string", "minLength": 1},
+          "tools": {"$ref": "#/$defs/tools"},
+          "missing_tools": {"$ref": "#/$defs/tools"},
+          "alternative_tools": {"$ref": "#/$defs/tools"},
+          "required_native_capabilities": {"type": "array", "items": {"type": "string"}},
+          "requires_confirmation": {"type": "boolean"},
+          "scope": {"enum": ["local", "resolve"]}
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"available": {"const": true}}},
+            "then": {"properties": {"status": {"const": "available"}, "supported": {"const": true}}}
+          },
+          {
+            "if": {"properties": {"status": {"const": "available"}}},
+            "then": {"properties": {"available": {"const": true}}}
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "tools": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+  }
+}

@@ -16,6 +16,7 @@ from typing import Any
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
+from agent.capabilities import workflow_capabilities
 from mcp_server.fairlight import register_fairlight_tools
 from mcp_server.lua_experimental import create_server as create_lua_server
 from mcp_server.windows_recording import register_windows_recording_tools
@@ -56,8 +57,9 @@ def create_server(
         root,
         name="davinci-resolve-agent-free-marker",
         instructions=(
-            "Resolve Free marker backend. Start its managed script from "
-            "Workspace > Scripts once per Resolve session. Call "
+            "Resolve Free marker backend. Call video_agent_capabilities before "
+            "selecting a workflow. Start its managed script from Workspace > "
+            "Scripts once per Resolve session. Call "
             "resolve_free_connection_status for a fresh native round trip. "
             "Only typed bounded commands are supported; no arbitrary code. "
             "Writes require exact project identity, confirmation, and stable "
@@ -302,6 +304,69 @@ def create_server(
         from providers.resolve.marker_transport import inspect_pending
 
         return await asyncio.to_thread(inspect_pending, root)
+
+    @server.tool(
+        annotations=ToolAnnotations(
+            read_only_hint=True, destructive_hint=False,
+            idempotent_hint=True, open_world_hint=False,
+        )
+    )
+    async def video_agent_capabilities(
+        verify_connection: bool = False,
+        timeout_seconds: float = 30,
+    ) -> dict[str, Any]:
+        """Report this session's workflows and blockers, optionally with a fresh read.
+
+        Does not open projects, invoke Windows UI, recover writes or mutate Resolve.
+        Python receipts are not compatible with the marker editing primitives.
+        """
+        connection = (
+            await resolve_free_connection_status(timeout_seconds)
+            if verify_connection else {}
+        )
+        startup = connection.get("startup")
+        diagnostics = (
+            startup if isinstance(startup, dict)
+            else await asyncio.to_thread(inspect_startup, root)
+        )
+        recovery = diagnostics.get("recovery", {})
+        blocker = None
+        if diagnostics.get("metadata_status") != "valid":
+            blocker = "runtime_metadata_invalid"
+        elif diagnostics.get("session") != client.session:
+            blocker = "runtime_session_changed"
+        elif diagnostics.get("terminal"):
+            blocker = "native_session_exited"
+        elif recovery.get("status") != "inspected":
+            blocker = "recovery_inspection_required"
+        elif recovery.get("pending_receipt_count") or recovery.get("inbox_occupied"):
+            blocker = "original_operation_recovery_required"
+        elif recovery.get("client_lock_present") or recovery.get(
+            "lease_publish_lock_present"
+        ):
+            blocker = "operation_busy"
+        connected = connection.get("connected")
+        if blocker in {
+            "runtime_metadata_invalid", "runtime_session_changed",
+            "native_session_exited",
+        }:
+            connected = False
+        return workflow_capabilities(
+            backend="free_marker",
+            tools=[tool.name for tool in await server.list_tools()],
+            connected=connected,
+            evidence=connection.get("liveness_source", "local_runtime_diagnostics"),
+            session=client.session,
+            project=connection.get("project"),
+            protocol=client.protocol,
+            session_capabilities=client.capabilities,
+            media_roots_configured=bool(client.media_roots) and all(
+                path.is_dir() for path in client.media_roots
+            ),
+            mutation_blocker=blocker,
+            ui=ui_service.adapter.capabilities(),
+            fairlight=fairlight_service.adapter.capabilities(),
+        )
 
     return server
 

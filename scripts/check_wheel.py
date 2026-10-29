@@ -26,6 +26,8 @@ REQUIRED_MEMBERS: Final = frozenset(
         "agent/color_presets.py",
         "agent/color_workflow.py",
         "agent/take_selection.py",
+        "agent/capabilities.py",
+        "contracts/workflow-capabilities.schema.json",
         "agent/storage.py",
         "bridges/resolve/ResolveBridge.py",
         "config/default.toml",
