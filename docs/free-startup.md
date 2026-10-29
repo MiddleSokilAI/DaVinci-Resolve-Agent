@@ -5,7 +5,13 @@ the MCP client are separate steps. The Free Marker backend needs an **already
 open saved project**. Its native replies are project exports, so it cannot
 bootstrap or return a project catalogue from an empty Project Manager screen.
 
-## The supported path
+Two modes use the same native menu bundle. Static `--runtime` mode requires
+the menu step below. Opt-in `--managed-profile` mode delegates that step and
+runtime rotation to a Windows supervisor; see the
+[managed autostart guide](managed-autostart.md). Neither mode chooses or opens
+a project from Project Manager.
+
+## The manual path (`--runtime`)
 
 1. Launch the installed Resolve application and open the intended **existing**
    project. Do not create a replacement with a similar name.
@@ -24,16 +30,23 @@ A healthy read can coexist with an earlier uncertain write. Connection status
 preserves recovery instructions for that operation; inspect them before changing
 project media or timelines. It does not acknowledge or clear an earlier write.
 
-The current Free backend has no MCP command to launch Resolve, list/open an
-existing project from Project Manager, or start its menu bridge automatically.
-Startup capabilities report these limits explicitly. The separate experimental
-scriptlib launcher is not an accepted substitute for this supported path.
+The static Free backend has no MCP command to launch Resolve or list/open an
+existing project from Project Manager. Static configuration alone does not start
+the menu bridge. The managed supervisor can invoke the fixed menu after a saved
+project window is available, then requires a fresh native reply. Its persisted
+status is exposed through `resolve_free_autostart_status`; it is separate from
+the per-runtime diagnostics below. The experimental scriptlib launcher remains
+an independent route with pending acceptance and known upstream regression
+evidence; it is not substituted by either mode.
 
 ## Diagnose before waiting for another timeout
 
 `resolve_free_startup_status` reads local evidence without publishing a native
 request. Pass the intended `target_project_name` to label its manual handoff.
 It does not start Resolve, change projects, invoke scripts or import media.
+With managed autostart enabled, inspect the supervisor status first. Do not
+manually invoke a second bridge while a dispatch is in progress or its outcome
+is uncertain.
 
 | State | Evidence and next step |
 | --- | --- |
@@ -89,3 +102,5 @@ projects and timelines. Do not use a production import as a connection test.
 
 These diagnostics have offline automated coverage. They do not add live
 acceptance of Windows UI, automatic project opening or unattended startup.
+Managed autostart has its own acceptance requirements; an installed watcher or
+successful menu dispatch is not proof of a native connection.

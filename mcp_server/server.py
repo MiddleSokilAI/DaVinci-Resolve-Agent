@@ -1482,17 +1482,32 @@ def main() -> None:
         "--backend", choices=("python", "free-marker"), default="python"
     )
     parser.add_argument("--runtime", type=Path)
+    parser.add_argument("--managed-profile", type=Path)
     parser.add_argument("--enable-windows-recording-ui", action="store_true")
     args = parser.parse_args()
     if args.backend == "free-marker":
+        if args.managed_profile is not None:
+            if args.runtime is not None:
+                parser.error("--managed-profile and --runtime are mutually exclusive")
+            from mcp_server.managed_marker import run as run_managed
+
+            run_managed(
+                args.managed_profile,
+                enable_windows_recording_ui=args.enable_windows_recording_ui,
+            )
+            return
         if args.runtime is None:
-            parser.error("--backend free-marker requires --runtime")
+            parser.error(
+                "--backend free-marker requires --runtime or --managed-profile"
+            )
         from mcp_server.free_marker import run
 
         run(args.runtime, enable_windows_recording_ui=args.enable_windows_recording_ui)
         return
     if args.runtime is not None:
         parser.error("--runtime is only supported with --backend free-marker")
+    if args.managed_profile is not None:
+        parser.error("--managed-profile requires --backend free-marker")
     if args.enable_windows_recording_ui:
         parser.error("--enable-windows-recording-ui requires --backend free-marker")
     create_server().run()
