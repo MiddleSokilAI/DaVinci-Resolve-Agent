@@ -30,12 +30,15 @@ The local bundled Python external-API probe returned no Resolve object.
 
 Blackmagic's [Fusion scripting guide, Script Libraries](https://documents.blackmagicdesign.com/UserManuals/Fusion8_Scripting_Guide.pdf)
 documents root `Scripts:` `.scriptlib` loading. This is Fusion documentation,
-not a guarantee for every Resolve edition. The primary
-[AutoSubs startup implementation](https://github.com/tmoroney/auto-subs/blob/main/AutoSubs-App/src-tauri/resources/AutoSubs.scriptlib)
-uses that hook and `fusion:Execute()` to dispatch asynchronously; its
-[bootstrap](https://github.com/tmoroney/auto-subs/blob/main/AutoSubs-App/src-tauri/resources/modules/bootstrap.lua)
-describes the Resolve 21.1 Free Lua sandbox. These support trying this route,
-but local live acceptance remains necessary.
+not a guarantee for every Resolve edition. An earlier AutoSubs implementation
+used that hook with `fusion:Execute()`. Its maintainer's
+[2026-09-19 investigation](https://github.com/tmoroney/auto-subs/blob/main/Resolve-Integration/docs/resident-bridge-fusion-regression.md)
+reports Fusion control regressions and says the startup scriptlib was removed.
+The proposed `RunScript` and trampoline alternatives were not pursued. That
+historical implementation is not current evidence for a reliable resident
+startup context. This launcher remains experimental; the separate
+[managed Windows autostart](managed-autostart.md) invokes the fixed Scripts-menu
+entry and needs its own live acceptance.
 
 Our hook dispatches only a locally generated worker. It never runs the resident
 loop synchronously during startup. By default it waits for the configured project

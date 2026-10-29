@@ -63,6 +63,13 @@ REQUIRED_MEMBERS: Final = frozenset(
         "providers/resolve/startup_diagnostics.py",
         "providers/resolve/windows_host.py",
         "providers/resolve/ResolveHostMetadata.ps1",
+        "providers/resolve/ResolveBootstrapUI.ps1",
+        "providers/resolve/ResolveAutostartEntry.ps1",
+        "providers/resolve/windows_bootstrap.py",
+        "providers/resolve/marker_supervisor.py",
+        "providers/resolve/managed_status.py",
+        "mcp_server/managed_marker.py",
+        "agent/resolve_watch.py",
         "bridges/resolve/ResolveLuaRecording.lua",
         "transports/filesystem.py",
     }

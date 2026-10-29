@@ -82,6 +82,37 @@ media paths, повні command arguments або diagnostics bundles без по
 
 ## Поточне покриття
 
+### Managed Free marker bootstrap — 2026-10-29
+
+- Environment: Windows 10 Education 10.0.19045, Python 3.12.10,
+  Resolve Free 21.1.2.10 (edition operator-confirmed); agent 0.1.0,
+  native protocol 4, marker wire 1. Host MCP SDK 2.0 and the isolated
+  installed package with MCP SDK 2.3 were checked separately.
+- Initial state: an existing saved project was open; timeline and audio
+  configuration were outside this acceptance scope. The fixed Windows
+  adapter identified the editor by process generation and UI Automation
+  identity, verified the managed script bytes and dispatched its menu item.
+  The supervisor then received a fresh correlated native project response.
+- At `2026-10-29T14:20:51Z`, the isolated installed managed MCP endpoint
+  completed stdio initialization and advertised 52 tools. A new
+  `resolve_free_connection_status` request returned `connected = true`,
+  `native_roundtrip_verified = true` and the expected project name/UUID.
+  Private identifiers, paths, response archives and configuration stay local.
+- The per-user Startup shortcut was installed and its hidden watcher started.
+  The former owned experimental scriptlib was retained as a disabled backup.
+  At `2026-10-29T14:34:45Z`, guarded native quit accepted the exact project ID
+  after saving and exporting a unique backup. Process exit was verified
+  independently, then the official executable was launched normally.
+- Result: `verified` for fixed-menu bootstrap, fresh managed MCP identity,
+  hidden watcher startup and guarded save/backup/quit. The relaunched
+  application reached Project Manager; opening the saved project and verifying
+  automatic bootstrap into a new session remain **`pending`**. The UI
+  acceptance was stopped by the operator; no post-restart reconnection,
+  same-connection rollover or Windows-login execution is claimed.
+- Cross-generation idempotency, cancellation fencing, concurrent catalogue
+  initialization and lifecycle recovery have automated coverage. No media
+  import, timeline edit, audio processing change or recording occurred.
+
 ### Free marker project creation — automated coverage
 
 `resolve_lua_create_project` has a separate acceptance scope from the existing
