@@ -8,8 +8,11 @@ bootstrap or return a project catalogue from an empty Project Manager screen.
 Two modes use the same native menu bundle. Static `--runtime` mode requires
 the menu step below. Opt-in `--managed-profile` mode delegates that step and
 runtime rotation to a Windows supervisor; see the
-[managed autostart guide](managed-autostart.md). Neither mode chooses or opens
-a project from Project Manager.
+[managed autostart guide](managed-autostart.md). The watcher waits for an open
+project. A separate explicit managed `resolve_free_open_project` request can
+attempt an exact existing-project open through the experimental fixed Windows
+adapter; see [opening an existing project](open-existing-project.md) for its
+identity requirements and compatibility limits.
 
 ## The manual path (`--runtime`)
 

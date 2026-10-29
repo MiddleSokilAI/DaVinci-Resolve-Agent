@@ -34,6 +34,10 @@ from providers.resolve.lua_finishing import (
     validate_finishing,
     verify_video,
 )
+from providers.resolve.lua_project_context import (
+    PROJECT_CONTEXT_CAPABILITY,
+    validate_project_context_request,
+)
 from providers.resolve.marker_transport import (
     MarkerSlot,
     MarkerTransportError,
@@ -99,6 +103,10 @@ def prepare(root: Path, media_roots: list[Path] | None = None) -> Path:
     (root / "editing.lua").write_text(
         editing.read_text(encoding="utf-8"), encoding="utf-8"
     )
+    (root / "project_context.lua").write_text(
+        editing.with_name("ResolveLuaProjectContext.lua").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
     (root / "finishing.lua").write_text(
         editing.with_name("ResolveLuaFinishing.lua").read_text(encoding="utf-8"),
         encoding="utf-8",
@@ -145,7 +153,10 @@ def prepare(root: Path, media_roots: list[Path] | None = None) -> Path:
                 "session": session,
                 "protocol": 4,
                 "media_roots": roots,
-                "capabilities": ["quit_resolve", "create_project", "recording_api_v1"],
+                "capabilities": [
+                    "quit_resolve", "create_project", "recording_api_v1",
+                    PROJECT_CONTEXT_CAPABILITY,
+                ],
             }
         ),
         encoding="utf-8",
@@ -211,13 +222,16 @@ class LuaSnapshotClient:
         if slot.request["action"] not in {
             "ping",
             "get_current_project",
+            "verify_project_context",
             "get_timeline_summary",
             "get_render_status",
         }:
             return  # All writes, stop and unknown actions remain fail-closed.
         expired = math.floor(time.time()) > slot.request["expires"]
         candidates = [self.root / f"{slot.identity}.drp"]
-        if slot.request["action"] in {"get_timeline_summary", "get_render_status"}:
+        if slot.request["action"] in {
+            "get_timeline_summary", "get_render_status", "verify_project_context",
+        }:
             candidates = list(self.root.glob(f"{slot.identity}.ok_*.drp"))
             candidates += list(self.root.glob(f"{slot.identity}.error_*.drp"))
         acknowledged = False
@@ -262,6 +276,7 @@ class LuaSnapshotClient:
             not in {
                 "ping",
                 "get_current_project",
+                "verify_project_context",
                 "stop",
                 "get_render_status",
                 "get_timeline_summary",
@@ -312,7 +327,15 @@ class LuaSnapshotClient:
             )
         status_request = action == "get_render_status"
         summary_request = action == "get_timeline_summary"
-        detail_request = status_request or summary_request
+        context_request = action == "verify_project_context"
+        detail_request = status_request or summary_request or context_request
+        if context_request and (
+            self.protocol != 4 or PROJECT_CONTEXT_CAPABILITY not in self.capabilities
+        ):
+            raise ValueError(
+                "Project context verification requires a fresh "
+                "project_context_v1 session."
+            )
         if action in {"get_timeline_summary", "reload_modules"} and self.protocol != 4:
             raise ValueError("This operation requires a protocol-4 session.")
         if (action in FINISH_ACTIONS or status_request) and self.protocol not in {3, 4}:
@@ -334,6 +357,12 @@ class LuaSnapshotClient:
             assert idempotency_key is not None
             receipt = WriteReceipt(
                 self.root, idempotency_key, action, project_id, normalized
+            )
+        elif context_request:
+            if confirm is not False or idempotency_key is not None:
+                raise ValueError("Project context verification is read-only.")
+            normalized = validate_project_context_request(
+                arguments if arguments is not None else {}, expected_project_id,
             )
         elif detail_request:
             bounded_text(expected_project_id, "Expected project ID")
@@ -593,6 +622,26 @@ class LuaSnapshotClient:
                     # ExportProject creates the file before writing the ZIP footer.
                     time.sleep(0.1)
                     continue
+                if context_request:
+                    if (
+                        token != "context_verified"
+                        or project["id"] != expected_project_id
+                        or project["name"] != normalized["expected_project_name"]
+                    ):
+                        raise BridgeProtocolError(
+                            "Project context response is unverified."
+                        )
+                    acknowledged = True
+                    return {
+                        "project": project,
+                        "database": normalized["expected_database"],
+                        "folder": "",
+                        "context_verified": True,
+                        "folder_membership_verified": True,
+                        "readback_verified_by": "ResolveLuaProjectContext",
+                        "source": "live_lua_api",
+                        "response_path": str(response),
+                    }
                 if write:
                     if action == "create_project":
                         created = re.fullmatch(

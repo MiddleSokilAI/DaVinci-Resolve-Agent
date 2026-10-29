@@ -93,3 +93,51 @@ def test_script_startup_failure_reports_invocation_instead_of_json_traceback(
     monkeypatch.setattr(subprocess, "run", failed)
     with pytest.raises(RuntimeError, match="no valid result.*exit 1"):
         module.startup_entry(profile, "status")
+
+
+def test_cli_open_existing_forwards_exact_target_and_confirmation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    profile = make_profile(tmp_path)
+    calls: list[dict[str, Any]] = []
+
+    class Opener:
+        def __init__(self, received: Profile) -> None:
+            assert received.path == profile.path
+
+        def open_existing(self, **arguments: Any) -> dict[str, Any]:
+            calls.append(arguments)
+            return {"context_verified": True}
+
+    monkeypatch.setattr(module, "ProjectOpenService", Opener)
+    monkeypatch.setattr(sys, "argv", [
+        "watch", "--profile", str(profile.path), "--open-project", "Exact Project",
+        "--expected-project-id", "project-uuid", "--database-name", "Local Library",
+        "--idempotency-key", "open-once", "--confirm",
+    ])
+    module.main()
+    assert json.loads(capsys.readouterr().out) == {"context_verified": True}
+    assert calls == [{
+        "project_name": "Exact Project", "expected_project_id": "project-uuid",
+        "expected_database": {"DbType": "Disk", "DbName": "Local Library"},
+        "folder_path": [], "idempotency_key": "open-once", "confirm": True,
+        "timeout_seconds": 120,
+    }]
+
+
+@pytest.mark.parametrize("arguments", [
+    ["--open-project", "Exact Project"],
+    ["--expected-project-id", "project-uuid"], ["--confirm"],
+    ["--project-open-timeout", "90"],
+])
+def test_cli_refuses_incomplete_or_unscoped_open_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, arguments: list[str],
+) -> None:
+    profile = make_profile(tmp_path)
+    monkeypatch.setattr(sys, "argv", [
+        "watch", "--profile", str(profile.path), *arguments,
+    ])
+    with pytest.raises(SystemExit) as exit_info:
+        module.main()
+    assert exit_info.value.code == 2

@@ -15,6 +15,7 @@ GitHub Actions перевіряють Python-код, контракти, bridge 
 | Windows | Python | Resolve edition | Resolve version | Статус |
 |---|---|---|---|---|
 | 10 build 19045 | 3.12.10 | Free | 21.0.3.7 | `verified` |
+| 10 Education build 19045 | 3.12.10 | Free | 21.1.2.10 | `verified` — bounded existing-project open and bootstrap below |
 | 10 | 3.10 | Free | 21.x | `pending` |
 | 10 | 3.11 | Free | 21.x | `pending` |
 | 11 | 3.10 | Free | 21.x | `pending` |
@@ -82,7 +83,72 @@ media paths, повні command arguments або diagnostics bundles без по
 
 ## Поточне покриття
 
+### Existing-project open and automatic bootstrap (2026-10-29)
+
+- Environment: Windows 10 Education 10.0.19045, Python 3.12.10,
+  Resolve Free 21.1.2.10 (edition operator-confirmed); agent 0.1.0,
+  native protocol 4, marker wire 1. Private result timestamp:
+  **`2026-10-29T18:40:29.834Z`**.
+- Initial state: Resolve was running at Project Manager after a normal
+  relaunch, with no connected native marker session. The explicitly enabled
+  managed profile and its watcher were already configured. The target was an
+  existing saved project with a previously verified name and UUID in the root
+  of the only registered and selected local Disk library, under `guest`.
+- Entry point: the real `ProjectOpenService.open_existing` backend used by
+  `resolve_free_open_project`. The fixed in-agent Windows UI Automation adapter
+  applied the exact Name search, used the bounded Home/Down selection sequence
+  and exported the selected candidate to a unique private DRP. That archive's
+  UUID and name matched the request before the single project Open dispatch.
+  Fresh catalogue, process, search, file and input fences were retained.
+  No Chat Computer Use, OCR, GDI capture or direct SQL write to a live Resolve
+  database was used. SQLite inspection read private byte copies only.
+- After Open, the managed supervisor automatically started a new marker
+  session. A fresh native Lua `verify_project_context` request checked the
+  exact Disk database, root folder `""`, unique project-name membership and
+  actual project UUID, with both native guard passes. The completed host
+  result reported `no_op=false`, `ui_open_dispatched=true`,
+  `context_verified=true`, `folder_membership_verified=true`,
+  `native_connection_verified=true` and `proof_scope="fresh_native_context"`.
+- Result: **`verified` for this internal backend path** from post-restart
+  Project Manager through candidate identity, one Open, automatic bootstrap
+  and fresh full native context. This closes the Project Manager opening and
+  new-session bootstrap gap left pending in the earlier managed-bootstrap
+  acceptance below; that earlier run remains a historical record.
+- Installed MCP stdio acceptance, private proof timestamp
+  **`2026-10-29T18:59:16.528Z`**: the isolated installed package under Python
+  3.12.10 and MCP SDK 2.3.0 initialized and advertised 53 tools. Fresh native
+  connection readback matched the exact Unicode project name and UUID.
+  `resolve_free_open_project` then verified that already-open project with
+  `no_op=true`, `ui_open_dispatched=false`, `context_verified=true`,
+  `folder_membership_verified=true` and `proof_scope="fresh_native_context"`.
+  No additional project Open was dispatched by that call.
+- Repeating the same installed MCP request and key returned
+  `proof_scope="historical_completed_receipt"`, `replayed=true` and
+  `native_connection_verified=false`. This correctly identifies a stored
+  receipt rather than claiming a new native round trip. A second independent
+  stdio client initialized and received a fresh native response with the same
+  exact project identity. These installed discovery, connection, already-open
+  no-op, exact-key replay and independent-client checks are **`verified`**.
+- The complete cold Project Manager → UI Open → bootstrap path was exercised
+  through the internal service, not repeated through the installed stdio tool.
+  That integrated cold stdio path, replay of the UI-dispatched cold-open
+  receipt, same-connection generation rollover and Windows-login launch remain
+  **`pending`**. Windows 11, nested folders and multiple registered libraries
+  are not certified by this run. The supported guard still requires the known
+  project-schema 17 layout observed in Resolve 21.1.2 files, all guest projects
+  in the root, one selected Disk library and finite file/project bounds;
+  unknown layouts stop before Open.
+- No project creation, media import, timeline edit, audio configuration change
+  or recording was performed. The candidate DRP, host receipt, exact project
+  identifiers, library name, runtime configuration and raw native responses
+  remain private local evidence. No private paths, titles, UUIDs or exports are
+  included in this sanitized report.
+
 ### Managed Free marker bootstrap — 2026-10-29
+
+Historical acceptance from the earlier managed-bootstrap delivery: its pending
+post-restart opening step is superseded only within the bounded backend scope
+documented in **Existing-project open and automatic bootstrap (2026-10-29)**.
 
 - Environment: Windows 10 Education 10.0.19045, Python 3.12.10,
   Resolve Free 21.1.2.10 (edition operator-confirmed); agent 0.1.0,
@@ -1193,6 +1259,10 @@ off. Exercise mixed-DPI placement and refuse a wrong/ambiguous target before
 mutation. Keep private screen media, device names and project backups local.
 
 ## Free startup diagnostics — 2026-10-29
+
+Historical scope of the earlier startup-diagnostics delivery; the later
+**Existing-project open and automatic bootstrap (2026-10-29)** entry above
+records the subsequently verified bounded backend path.
 
 The added startup diagnostic is covered offline: metadata and lifecycle DRP
 validation, managed-menu/runtime binding, recovery priority, optional mocked

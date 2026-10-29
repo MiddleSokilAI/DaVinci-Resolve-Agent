@@ -12,6 +12,7 @@ from typing import Any
 
 from providers.resolve.managed_status import managed_status
 from providers.resolve.marker_supervisor import Profile, Supervisor
+from providers.resolve.project_open_service import ProjectOpenError, ProjectOpenService
 
 
 def startup_entry(profile: Profile, operation: str) -> dict[str, Any]:
@@ -82,9 +83,38 @@ def main() -> None:
     actions.add_argument("--install-autostart", action="store_true")
     actions.add_argument("--remove-autostart", action="store_true")
     actions.add_argument("--start", action="store_true")
+    actions.add_argument("--open-project", metavar="EXACT_NAME")
+    parser.add_argument("--expected-project-id")
+    parser.add_argument("--database-name")
+    parser.add_argument("--idempotency-key")
+    parser.add_argument("--confirm", action="store_true")
+    parser.add_argument("--project-open-timeout", type=float, default=120)
     args = parser.parse_args()
+    target_args = (args.expected_project_id, args.database_name, args.idempotency_key)
+    if args.open_project:
+        if not all(target_args):
+            parser.error("--open-project requires --expected-project-id, "
+                         "--database-name and --idempotency-key")
+    elif any(target_args) or args.confirm or args.project_open_timeout != 120:
+        parser.error("Project target arguments require --open-project")
     profile = Profile.load(args.profile)
-    if args.install_autostart or args.remove_autostart:
+    if args.open_project:
+        try:
+            result = ProjectOpenService(profile).open_existing(
+                project_name=args.open_project,
+                expected_project_id=args.expected_project_id,
+                expected_database={"DbType": "Disk", "DbName": args.database_name},
+                folder_path=[], idempotency_key=args.idempotency_key,
+                confirm=args.confirm, timeout_seconds=args.project_open_timeout,
+            )
+        except ProjectOpenError as error:
+            print(json.dumps({"error": str(error), "code": error.code},
+                             ensure_ascii=False), file=sys.stderr)
+            raise SystemExit(1) from error
+        except ValueError as error:
+            parser.error(str(error))
+        print(json.dumps(result, ensure_ascii=False))
+    elif args.install_autostart or args.remove_autostart:
         print(json.dumps(startup_entry(
             profile, "install" if args.install_autostart else "remove"
         ), ensure_ascii=False))

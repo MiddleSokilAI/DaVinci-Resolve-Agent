@@ -52,10 +52,11 @@ function Assert-BootstrapUniqueKeys([string]$Text) {
 }
 
 function Get-BootstrapOfficialExecutable {
-    $programFiles=$env:ProgramW6432
-    if (-not $programFiles) { $programFiles=$env:ProgramFiles }
-    if (-not $programFiles) { Fail-Bootstrap 'INSTALLATION_PATH_UNAVAILABLE' }
-    return [IO.Path]::GetFullPath((Join-Path $programFiles 'Blackmagic Design\DaVinci Resolve\Resolve.exe'))
+    $knownProgramFiles=[Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+    if(-not $knownProgramFiles -or -not [IO.Path]::IsPathRooted($knownProgramFiles)){
+        Fail-Bootstrap 'INSTALLATION_PATH_UNAVAILABLE'
+    }
+    return [IO.Path]::GetFullPath((Join-Path $knownProgramFiles 'Blackmagic Design\DaVinci Resolve\Resolve.exe'))
 }
 
 function Get-BootstrapProjectHint([string]$Title) {

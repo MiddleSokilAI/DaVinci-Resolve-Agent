@@ -18,6 +18,7 @@ ALLOWED_ACTIONS = {
     "get_timeline_summary",
 }
 MODULES = (
+    "project_context.lua",
     "recording.lua",
     "editing.lua",
     "finishing.lua",

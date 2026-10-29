@@ -32,6 +32,7 @@ local ok, err = pcall(function()
             and type(request.expires) == "number" and request.expires >= os.time()
             and not handled[request.id]
             and (request.action == "ping" or request.action == "get_current_project"
+                 or request.action == "verify_project_context"
                  or request.action == "stop" or request.action == "get_render_status"
                  or request.action == "get_timeline_summary" or request.action == "reload_modules" or writes[request.action]) then
             handled[request.id] = true
@@ -52,6 +53,12 @@ local ok, err = pcall(function()
                         check(not project:IsRenderingInProgress(), "RENDERING")
                     end)
                     suffix = succeeded and ".accepted" or ".error_" .. (tostring(code):match("^[A-Z_]+$") or "INTERNAL_ERROR")
+                elseif request.action == "verify_project_context" then
+                    local succeeded, code = pcall(function()
+                        return dofile(root .. "/project_context.lua")(pm, project, request)
+                    end)
+                    suffix = succeeded and ".ok_context_verified"
+                        or ".error_" .. (tostring(code):match("^[A-Z_]+$") or "INTERNAL_ERROR")
                 elseif request.action == "reload_modules" then
                     local succeeded = false
                     if not project:IsRenderingInProgress() then

@@ -11,7 +11,8 @@ return function(root, session, max_payload, lease_seconds)
     assert(type(lease_seconds) == "number" and lease_seconds >= 5 and lease_seconds <= 3600 and lease_seconds % 1 == 0, "MARKER_LEASE_INVALID")
     local null = {}
     local actions = {
-        ping=true, get_current_project=true, stop=true, get_render_status=true,
+        ping=true, get_current_project=true, verify_project_context=true,
+        stop=true, get_render_status=true,
         get_timeline_summary=true, quit_resolve=true, create_project=true, import_media=true,
         create_timeline=true, duplicate_timeline=true, append_clip=true,
         set_clip_properties=true, add_subtitles=true, prepare_render=true,
