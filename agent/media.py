@@ -118,6 +118,11 @@ class MediaPolicy:
             normalized.append(str(resolved))
         return normalized
 
+    @property
+    def allowed_roots(self) -> tuple[Path, ...]:
+        """Return the configured immutable scope without widening it."""
+        return self._allowed_roots
+
     def _publish(self) -> None:
         policy_path = self._runtime_root / "state" / "media-policy.json"
         policy_path.parent.mkdir(parents=True, exist_ok=True)

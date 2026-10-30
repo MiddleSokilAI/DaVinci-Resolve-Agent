@@ -379,6 +379,19 @@ class MarkerSlot:
         _clear_with_retry(root.resolve(), session, identity)
 
 
+def _rename_lease(source: Path, destination: Path) -> None:
+    """Retry a transient Windows directory handle, never a native command."""
+    deadline = time.monotonic() + 1
+    while True:
+        try:
+            source.rename(destination)
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.025)
+
+
 def publish_lease(root: Path) -> int:
     """Publish eight data bytes; Lua retains its last valid deadline across rotation."""
     root = root.resolve()
@@ -414,13 +427,13 @@ def publish_lease(root: Path) -> int:
                 raise MarkerTransportError("Refusing a foreign lease slot.")
             _owned_directory(target, root, previous_owner)
             retired = root / f".lease-retired-{identity}"
-            target.rename(retired)
+            _rename_lease(target, retired)
         try:
-            stage.rename(target)
+            _rename_lease(stage, target)
             stage = None
         except BaseException:
             if retired is not None and not target.exists():
-                retired.rename(target)
+                _rename_lease(retired, target)
                 retired = None
             raise
         if retired is not None and previous_owner is not None:
@@ -535,6 +548,7 @@ def prepare_marker(
     *,
     lease_seconds: int = DEFAULT_LEASE_SECONDS,
     max_payload_bytes: int = MAX_PAYLOAD_BYTES,
+    sdk_runtime_root: Path | None = None,
 ) -> Path:
     """Prepare a new protocol-4 marker session and its fixed self-contained script."""
     _lease_limit(lease_seconds)
@@ -553,6 +567,13 @@ def prepare_marker(
         lease_seconds=lease_seconds,
         poll_interval_seconds=0.25,
     )
+    if sdk_runtime_root is not None:
+        if not sdk_runtime_root.is_absolute() or sdk_runtime_root.is_symlink():
+            raise ValueError("SDK runtime must be absolute and unlinked.")
+        metadata["sdk_proxy"] = {
+            "version": 1,
+            "runtime_root": str(sdk_runtime_root.resolve()),
+        }
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
     script = root / "marker-bridge.lua"
     script.write_text(build_marker_bridge(root), encoding="utf-8")

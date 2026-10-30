@@ -184,6 +184,11 @@ def workflow_capabilities(
                 elif connected is not True:
                     status, reason = "unverified", "fresh_native_check_required"
                 elif not marker and any(
+                    native.get(key) is False
+                    for key in workflow.python_capabilities
+                ):
+                    status, reason = "unsupported", "native_capability_unavailable"
+                elif not marker and any(
                     native.get(key) is not True
                     for key in workflow.python_capabilities
                 ):

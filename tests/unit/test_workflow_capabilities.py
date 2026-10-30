@@ -103,6 +103,20 @@ def test_python_local_tools_work_offline_and_native_capabilities_fail_closed() -
     assert report["timeline_assembly"]["reason"] == "native_capability_not_confirmed"
 
 
+def test_known_edition_restriction_is_unsupported_rather_than_unverified() -> None:
+    report = rows(
+        workflow_capabilities(
+            backend="python",
+            tools=["resolve_create_subtitles_from_audio"],
+            connected=True,
+            evidence="fresh_native_request",
+            native_capabilities={"subtitle.auto_caption": False},
+        )
+    )
+    assert report["resolve_auto_captions"]["status"] == "unsupported"
+    assert report["resolve_auto_captions"]["reason"] == "native_capability_unavailable"
+
+
 def test_marker_capability_tool_default_never_dispatches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

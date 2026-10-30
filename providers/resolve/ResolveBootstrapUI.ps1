@@ -131,6 +131,32 @@ public static class BootstrapNative {
     [DllImport("user32.dll")] private static extern bool CloseDesktop(IntPtr desktop);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr handle, out uint id);
+    [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr window);
+    [DllImport("user32.dll")] private static extern bool BringWindowToTop(IntPtr window);
+    [DllImport("user32.dll")] private static extern bool AttachThreadInput(uint source,uint target,bool attach);
+    [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+    public static void ActivateWindow(IntPtr window,uint expectedProcess) {
+        uint process;
+        GetWindowThreadProcessId(window,out process);
+        if(process!=expectedProcess)throw new InvalidOperationException("BSUI_PROCESS_CHANGED");
+        uint foregroundProcess;
+        uint foregroundThread=GetWindowThreadProcessId(GetForegroundWindow(),out foregroundProcess);
+        if(foregroundProcess==expectedProcess)return;
+        BringWindowToTop(window);SetForegroundWindow(window);
+        GetWindowThreadProcessId(GetForegroundWindow(),out foregroundProcess);
+        if(foregroundProcess==expectedProcess)return;
+        uint currentThread=GetCurrentThreadId();bool attached=false;
+        try {
+            if(foregroundThread!=0 && foregroundThread!=currentThread) {
+                attached=AttachThreadInput(currentThread,foregroundThread,true);
+                if(!attached)throw new InvalidOperationException("BSUI_ACTIVATION_DENIED");
+            }
+            BringWindowToTop(window);SetForegroundWindow(window);
+        } finally {
+            if(attached && !AttachThreadInput(currentThread,foregroundThread,false))
+                throw new InvalidOperationException("BSUI_ACTIVATION_DETACH_FAILED");
+        }
+    }
     public static bool InteractiveDesktop() {
         IntPtr desktop=OpenInputDesktop(0,false,1);
         if(desktop==IntPtr.Zero) return false;
@@ -312,6 +338,15 @@ function Assert-BootstrapForeground {
     if ($foregroundProcess -ne $script:ExpectedProcess.pid) { Fail-Bootstrap 'FOCUS_LOST' }
 }
 
+function Activate-BootstrapWindow {
+    $null=Assert-BootstrapContext
+    [BootstrapNative]::ActivateWindow([IntPtr]::new($script:ExpectedProcess.window_handle),
+        [uint32]$script:ExpectedProcess.pid)
+    Start-Sleep -Milliseconds 150
+    $null=Assert-BootstrapContext
+    Assert-BootstrapForeground
+}
+
 function Get-BootstrapScriptHash {
     if (-not $env:APPDATA) { Fail-Bootstrap 'APPDATA_UNAVAILABLE' }
     $path=Join-Path $env:APPDATA 'Blackmagic Design\DaVinci Resolve\Support\Fusion\Scripts\Utility\Resolve Agent Marker.lua'
@@ -415,9 +450,7 @@ function Invoke-BootstrapManagedMarker($Request) {
         if ((Get-BootstrapWindowState $main) -ceq 'minimized') { Fail-Bootstrap 'WINDOW_RESTORE_FAILED' }
     }
     if ($main.Current.IsOffscreen) { Fail-Bootstrap 'WINDOW_OFFSCREEN' }
-    $main.SetFocus()
-    Start-Sleep -Milliseconds 150
-    Assert-BootstrapForeground
+    Activate-BootstrapWindow
     Expand-BootstrapMenu (Find-BootstrapMenuItem @('Workspace'))
     Expand-BootstrapMenu (Find-BootstrapMenuItem @('Scripts'))
     $menuPath=@('Workspace','Scripts')

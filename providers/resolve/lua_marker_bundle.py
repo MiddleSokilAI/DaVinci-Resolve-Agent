@@ -69,14 +69,15 @@ def build_marker_bridge(root: Path) -> str:
 local exit_pm=api:GetProjectManager()
 local exit_project=exit_pm:GetCurrentProject()
 local owned_project_id=shared.project_id or marker_project_id
-if exit_project and exit_project:GetUniqueId()==owned_project_id then
+if exit_project and (SDK_EXIT_CONTEXT
+    or exit_project:GetUniqueId()==owned_project_id) then
     local reason=ok and stop_reason or "error"
     pcall(function()
         exit_pm:ExportProject(exit_project:GetName(),
             root.."/marker-exit-"..reason..".drp", false)
     end)
 end
-"""
+""".replace("SDK_EXIT_CONTEXT", "true" if metadata.get("sdk_proxy") else "false")
     reader = (
         Path(__file__).resolve().parents[2]
         / "bridges"
@@ -84,6 +85,60 @@ end
         / "ResolveLuaMarkerReader.lua"
     ).read_text(encoding="utf-8-sig")
     sources = {name: (root / name).read_text(encoding="utf-8-sig") for name in MODULES}
+    sdk = metadata.get("sdk_proxy")
+    if sdk is not None:
+        # Host-only gate occupying the original slot during one complete SDK
+        # command. It is accepted as data and never dispatched by the loop.
+        reader = _replace_once(
+            reader, "local actions = {", "local actions = {sdk_operation=true,"
+        )
+        from providers.resolve.sdk_api import (
+            SDK_COMMON_WRITE_METHODS,
+            SDK_CONSTANTS,
+            SDK_METHODS,
+            SDK_MUTATIONS,
+            SDK_WRITE_METHODS,
+        )
+
+        if not isinstance(sdk, dict) or sdk.get("version") != 1:
+            raise ValueError("Unsupported SDK proxy metadata.")
+        runtime = Path(sdk["runtime_root"])
+        if not runtime.is_absolute() or runtime.is_symlink():
+            raise ValueError("Invalid SDK proxy runtime.")
+        policy = {
+            "methods": sorted(SDK_METHODS),
+            "constants": sorted(SDK_CONSTANTS),
+            "mutations": sorted(SDK_MUTATIONS),
+            "write_methods": {
+                key: list(value) for key, value in SDK_WRITE_METHODS.items()
+            },
+            "common_write_methods": list(SDK_COMMON_WRITE_METHODS),
+            "backup_roots": [str(root / "core/backups"), str(runtime / "backups")],
+        }
+        sources["sdk.lua"] = (
+            Path(__file__).resolve().parents[2] / "bridges/resolve/ResolveLuaSDK.lua"
+        ).read_text(encoding="utf-8")
+        sdk_init = (
+            "\nlocal sdk_reader=reader_factory(root..'/sdk-rpc',session,4096,"
+            + str(lease)
+            + ")\n"
+            "local sdk_ok,sdk_proxy=pcall(function()\n"
+            "return dofile(root..'/sdk.lua')(api,root,session,sdk_reader.decode_json,"
+            + lua_value(policy)
+            + ",sdk_reader.read_request,function(id) shared.project_id=id end)\n"
+            "end)\nif not sdk_ok then sdk_proxy=nil end\n"
+        )
+        bridge = _replace_once(
+            bridge,
+            "local shared = {jobs={}}",
+            "local shared = {jobs={}}" + sdk_init,
+        )
+        bridge = _replace_once(
+            bridge,
+            "while marker_reader.is_alive() do",
+            "while marker_reader.is_alive() do\n"
+            "        if sdk_proxy then pcall(sdk_proxy.poll) end",
+        )
     sources["bridge.lua"] = bridge
     factories = "\n".join(
         "factories["
@@ -123,7 +178,14 @@ end
         "local factories={}\n" + factories + "\n"
         "local load_module\nload_module=function(path)\n"
         "    if path==root..'/request.lua' then\n"
-        "        return marker_reader.read_request()\n    end\n"
+        "        local request=marker_reader.read_request()\n"
+        + (
+            "        if request and request.action=='sdk_operation' "
+            "then return nil end\n"
+            if sdk is not None
+            else ""
+        )
+        + "        return request\n    end\n"
         "    local factory=assert(factories[path],'MARKER_UNBUNDLED_MODULE')\n"
         "    return factory(load_module)\nend\n"
         "if _G.ResolveAgentLuaRunning or _G.ResolveAgentMarkerSession then\n"

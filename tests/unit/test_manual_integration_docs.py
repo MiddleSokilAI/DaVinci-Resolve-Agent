@@ -81,7 +81,8 @@ def test_user_guide_links_to_preserved_bridge_reference() -> None:
         encoding="utf-8"
     )
 
-    assert "## Перше підключення Resolve Free" in readme
+    assert "## Ручний режим Resolve Free для діагностики" in readme
+    assert "(docs/automatic-connection.md)" in readme
     assert "(docs/free-mcp-backend.md)" in readme
     assert "(docs/README-reference.md)" in readme
     assert "Milestone M35: interactive editing session" in reference

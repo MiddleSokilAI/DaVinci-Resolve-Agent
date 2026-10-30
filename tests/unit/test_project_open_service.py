@@ -575,3 +575,32 @@ def test_completed_receipt_mismatched_result_is_not_replayed(fixture: Fixture) -
     with pytest.raises(ProjectOpenError, match="HOST_RECEIPT_INVALID"):
         fixture.open()
     assert len(fixture.opens) == 1
+
+
+def test_waits_for_watcher_lock_without_repeating_open(tmp_path: Path) -> None:
+    fixture = Fixture(tmp_path)
+    fixture.held_lock = operation_lock(fixture.profile)
+    fixture.held_lock.__enter__()
+    result = fixture.open()
+    assert result["status"] == "completed"
+    assert len(fixture.opens) == 1
+
+
+def test_operation_wait_is_bounded(tmp_path: Path) -> None:
+    fixture = Fixture(tmp_path)
+    with (
+        operation_lock(fixture.profile),
+        pytest.raises(ProjectOpenError, match="HOST_OPERATION_BUSY"),
+    ):
+        fixture.open()
+    assert fixture.opens == []
+    assert fixture.now == pytest.approx(101.0)
+
+
+def test_operation_body_is_never_retried(tmp_path: Path) -> None:
+    fixture = Fixture(tmp_path)
+    attempts = 0
+    with pytest.raises(OperationBusy), fixture.service()._operation_until(101.0):
+        attempts += 1
+        raise OperationBusy("operation.lock")
+    assert attempts == 1

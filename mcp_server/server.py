@@ -1525,12 +1525,22 @@ def main() -> None:
     """Run the local MCP server over stdio."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--backend", choices=("python", "free-marker"), default="python"
+        "--backend", choices=("auto", "python", "free-marker"), default="auto"
     )
     parser.add_argument("--runtime", type=Path)
     parser.add_argument("--managed-profile", type=Path)
     parser.add_argument("--enable-windows-recording-ui", action="store_true")
     args = parser.parse_args()
+    if args.backend == "auto":
+        if args.runtime is not None:
+            parser.error("--runtime requires an explicit free-marker backend")
+        from mcp_server.automatic import run as run_automatic
+
+        run_automatic(
+            args.managed_profile,
+            enable_windows_recording_ui=args.enable_windows_recording_ui,
+        )
+        return
     if args.backend == "free-marker":
         if args.managed_profile is not None:
             if args.runtime is not None:

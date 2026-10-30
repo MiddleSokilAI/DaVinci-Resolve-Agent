@@ -263,6 +263,62 @@ def test_lease_rotation_preserves_foreign_files_and_keeper_stops(
     assert not (root / "lease-publish.lock").exists()
 
 
+def test_lease_rotation_retries_transient_windows_directory_handle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "session"
+    prepare_marker(root)
+    rename = Path.rename
+    attempts = 0
+
+    def locked(source: Path, target: Path) -> Path:
+        nonlocal attempts
+        if source == root / "lease":
+            attempts += 1
+            if attempts < 3:
+                raise PermissionError("temporary directory handle")
+        return rename(source, target)
+
+    monkeypatch.setattr(Path, "rename", locked)
+    publish_lease(root)
+    assert attempts == 3
+    assert (root / "lease/ready.marker").is_file()
+    assert not (root / "lease-publish.lock").exists()
+    assert not list(root.glob(".lease-retired-*"))
+
+
+def test_permanent_lease_directory_lock_keeps_original_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "session"
+    prepare_marker(root)
+    before = {path.name: path.read_bytes() for path in (root / "lease").iterdir()}
+    rename = Path.rename
+    clock = 0.0
+
+    def now() -> float:
+        nonlocal clock
+        clock += 0.5
+        return clock
+
+    def locked(source: Path, target: Path) -> Path:
+        if source == root / "lease":
+            raise PermissionError("persistent directory handle")
+        return rename(source, target)
+
+    monkeypatch.setattr(time, "monotonic", now)
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(Path, "rename", locked)
+    with pytest.raises(PermissionError, match="persistent"):
+        publish_lease(root)
+    assert before == {
+        path.name: path.read_bytes() for path in (root / "lease").iterdir()
+    }
+    assert not (root / "lease-publish.lock").exists()
+
+
 def test_nonfinite_json_and_unexpected_envelope_fields_rejected(
     tmp_path: Path,
 ) -> None:

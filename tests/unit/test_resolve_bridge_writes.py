@@ -501,6 +501,9 @@ class FakeProject:
     def GetName(self) -> str:
         return "M4 Test Project"
 
+    def GetUniqueId(self) -> str:
+        return "native-project-uuid"
+
     def GetMediaPool(self) -> FakeMediaPool:
         return self.media_pool
 

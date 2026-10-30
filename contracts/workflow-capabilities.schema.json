@@ -7,7 +7,7 @@
   "required": ["schema_version", "backend", "session", "connected", "evidence", "project", "mutation_blocker", "registered_tools", "workflows", "limitations"],
   "properties": {
     "schema_version": {"const": "1.0"},
-    "backend": {"enum": ["python", "free_marker"]},
+    "backend": {"enum": ["auto", "python", "free_marker"]},
     "session": {"type": ["string", "null"]},
     "connected": {"type": ["boolean", "null"]},
     "evidence": {"type": "string", "minLength": 1, "maxLength": 64},

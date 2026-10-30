@@ -19,7 +19,9 @@ def test_installed_mcp_server_supports_stdio_handshake() -> None:
     assert executable.is_file()
 
     async def list_tool_names() -> set[str]:
-        parameters = StdioServerParameters(command=str(executable), args=[])
+        parameters = StdioServerParameters(command=str(executable), args=[
+            "--backend", "python",
+        ])
         async with (
             stdio_client(parameters) as (read_stream, write_stream),
             ClientSession(read_stream, write_stream) as session,
