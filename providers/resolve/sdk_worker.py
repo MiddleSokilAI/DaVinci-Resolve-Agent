@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import subprocess
 import sys
 import threading
@@ -50,14 +51,14 @@ class SDKWorker:
         self._python_available: dict[tuple[Any, ...], bool] = {}
 
     def _status(self, phase: str, **details: Any) -> None:
-        atomic_json(
-            self.status_path,
-            {
-                "phase": phase,
-                "updated_at": time.time(),
-                **details,
-            },
-        )
+        try:
+            atomic_json(
+                self.status_path,
+                {"phase": phase, "updated_at": time.time(), **details},
+            )
+        except OSError:
+            # Monitoring is advisory; command ownership/receipts remain strict.
+            logging.getLogger(__name__).exception("SDK status publication failed")
 
     def _python(self) -> tuple[Path, Path]:
         executable = (
@@ -343,7 +344,14 @@ class SDKWorker:
                         key=lambda path: (path.stat().st_mtime_ns, path.name),
                     )
                     if not paths:
-                        active = read_active(self.profile)
+                        try:
+                            active = read_active(self.profile)
+                        except (OSError, RuntimeError, ValueError) as error:
+                            # Windows may retain the replaced snapshot briefly.
+                            # This idle read has not dispatched native work.
+                            self._status("waiting_state", reason=str(error)[:256])
+                            stop.wait(0.2)
+                            continue
                         if (
                             active
                             and active["phase"] == "connected"

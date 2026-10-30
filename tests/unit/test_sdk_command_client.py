@@ -239,6 +239,53 @@ def test_recent_client_work_prevents_an_immediate_background_read(
     assert not list(worker.directories["commands"].glob("*.json"))
 
 
+def test_transient_idle_snapshot_error_does_not_kill_the_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import providers.resolve.sdk_worker as module
+
+    worker, _, _ = setup_worker(tmp_path, monkeypatch)
+    stop = threading.Event()
+    calls = 0
+
+    def read(profile: Profile) -> dict[str, Any] | None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("STATE_UNREADABLE")
+        stop.set()
+        return None
+
+    monkeypatch.setattr(module, "read_active", read)
+    monkeypatch.setattr(stop, "wait", lambda seconds: None)
+    worker.run(stop)
+    assert calls == 2
+    assert not list(worker.directories["commands"].glob("*.json"))
+
+
+def test_status_sharing_violation_preserves_a_completed_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import providers.resolve.sdk_worker as module
+
+    worker, native, _ = setup_worker(tmp_path, monkeypatch)
+    publish = module.atomic_json
+
+    def failed_status(path: Path, value: Any) -> None:
+        if path == worker.status_path:
+            raise PermissionError("Windows sharing violation")
+        publish(path, value)
+
+    monkeypatch.setattr(module, "atomic_json", failed_status)
+    path = queued(worker, "create_timeline", {"name": "One"}, "key")
+    worker.process(path)
+    assert json.loads((worker.directories["responses"] / path.name).read_text())[
+        "status"
+    ] == "success"
+    worker.process(queued(worker, "create_timeline", {"name": "One"}, "key"))
+    assert native.project_manager.export_count == 1
+
+
 @pytest.mark.parametrize("invalid", [False, True])
 def test_background_read_does_not_compete_with_pending_project_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid: bool,
