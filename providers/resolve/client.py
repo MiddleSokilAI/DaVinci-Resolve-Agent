@@ -300,6 +300,24 @@ class ResolveProviderClient:
         )
         return self._object_value("import_media", result)
 
+    def close_project(
+        self,
+        expected_project_id: str,
+        *,
+        confirm_close: bool,
+        timeout_seconds: float = 30,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        """Close only an exact saved project, preserving original replay receipts."""
+        result = self._client.request(
+            provider="resolve", action="close_project",
+            arguments={"expected_project_id": expected_project_id,
+                       "confirm_close": confirm_close},
+            timeout_seconds=timeout_seconds, idempotency_key=idempotency_key,
+            create_backup=True,
+        )
+        return self._object_value("close_project", result)
+
     def create_project(
         self,
         name: str,

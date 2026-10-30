@@ -303,7 +303,8 @@ return function(api, root, session, decode_json, policy, read_request, project_c
         if invalidates[call.method] then assert_readset();descriptors={} end
         local result=f(target.value,unpack(args,1,count))
         if call.method=='ExportProject' and result==true then operation.backup_ready=true end
-        if call.method=='CreateProject' and result~=nil then
+        if (call.method=='CreateProject' and result~=nil)
+            or (call.method=='CloseProject' and result==true) then
             operation.project_id=current_project_id()
             if project_changed then project_changed(operation.project_id) end
         end

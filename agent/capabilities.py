@@ -36,6 +36,8 @@ class Workflow:
 WORKFLOWS = (
     Workflow("project_inspection", ("resolve_get_project",),
              ("resolve_lua_get_project",), writes=False),
+    Workflow("project_closure", ("resolve_close_project",),
+             python_capabilities=("project.close",)),
     Workflow("project_creation", ("resolve_create_project",),
              ("resolve_lua_create_project",), ("project.create",)),
     Workflow("timeline_inspection", ("resolve_get_timeline",),

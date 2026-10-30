@@ -61,6 +61,7 @@
         "get_render_job_status",
         "import_media",
         "create_project",
+        "close_project",
         "create_timeline",
         "ensure_timeline_tracks",
         "duplicate_timeline",
@@ -1116,6 +1117,7 @@
             "enum": [
               "import_media",
               "create_project",
+              "close_project",
               "create_timeline",
               "ensure_timeline_tracks",
               "duplicate_timeline",
@@ -1177,6 +1179,37 @@
                 "pattern": "^\\S(?:[^\\x00-\\x1f]*\\S)?$"
               },
               "confirm_create": {
+                "const": true
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "close_project"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "arguments": {
+            "additionalProperties": false,
+            "required": [
+              "expected_project_id",
+              "confirm_close"
+            ],
+            "properties": {
+              "expected_project_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^\\S(?:[^\\x00-\\x1f]*\\S)?$"
+              },
+              "confirm_close": {
                 "const": true
               }
             }

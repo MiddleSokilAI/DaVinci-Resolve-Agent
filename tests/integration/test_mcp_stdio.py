@@ -50,6 +50,7 @@ def test_installed_mcp_server_supports_stdio_handshake() -> None:
         "resolve_import_media",
         "resolve_create_timeline",
         "resolve_create_project",
+        "resolve_close_project",
         "resolve_ensure_timeline_tracks",
         "resolve_duplicate_timeline",
         "resolve_set_current_timeline",

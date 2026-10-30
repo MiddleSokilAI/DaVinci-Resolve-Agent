@@ -629,6 +629,15 @@ class Supervisor:
         )
         if active is not None and isinstance(process, dict) and not same_process:
             release_previous_lease()
+        from providers.resolve.project_close_state import close_intent
+
+        closure = close_intent(self.profile)
+        if closure and closure["phase"] == "pending":
+            return self._status(
+                "recovery_required", reason="PROJECT_CLOSE_REQUIRES_RECOVERY"
+            )
+        if closure and state == "project_manager":
+            return self._status("waiting_project", reason="project_closed_by_user")
         if (
             active is not None
             and active["phase"] == "connected"

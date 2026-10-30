@@ -44,7 +44,7 @@ def test_default_stdio_exposes_both_catalogues_without_manual_start(
         ):
             await client.initialize()
             tools = await client.list_tools()
-            assert len(tools.tools) == 156
+            assert len(tools.tools) == 157
             report = await client.call_tool(
                 "video_agent_capabilities",
                 {

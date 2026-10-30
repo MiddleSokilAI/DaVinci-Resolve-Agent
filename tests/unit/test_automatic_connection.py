@@ -139,7 +139,7 @@ def test_catalogue_and_unverified_capabilities_do_not_bootstrap(
 
     async def scenario() -> None:
         tools = await server.list_tools()
-        assert len(tools) == len({tool.name for tool in tools}) == 156
+        assert len(tools) == len({tool.name for tool in tools}) == 157
         assert {
             "resolve_create_project",
             "sync_screen_and_webcam",

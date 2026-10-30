@@ -269,6 +269,25 @@ def create_server(application: AgentApplication | None = None) -> MCPServer:
         )
 
     @server.tool(annotations=WRITE_TOOL)
+    async def resolve_close_project(
+        expected_project_id: str,
+        idempotency_key: str,
+        confirm_close: bool = False,
+        timeout_seconds: float = 30,
+    ) -> dict[str, Any]:
+        """Save, back up and close exactly the current project; keep Resolve running.
+
+        Requires explicit user intent. Reuse the same key after a timeout.
+        Replay returns historical evidence without opening or closing any project.
+        Automatic reopening stays suspended until an explicit project open.
+        """
+        return await asyncio.to_thread(
+            service.resolve_close_project, expected_project_id,
+            confirm_close=confirm_close, idempotency_key=idempotency_key,
+            timeout_seconds=timeout_seconds,
+        )
+
+    @server.tool(annotations=WRITE_TOOL)
     async def resolve_create_project(
         name: str,
         confirm_create: bool = False,

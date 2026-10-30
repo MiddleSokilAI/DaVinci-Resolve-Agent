@@ -1,7 +1,7 @@
 # Automatic Resolve connection
 
 The standard `davinci-agent-mcp` command defaults to `--backend auto`. It exposes
-the union of the main workflow and managed Free tool catalogues: 156 distinct
+the union of the main workflow and managed Free tool catalogues: 157 distinct
 tools. Discovery and offline workflows do not launch Resolve.
 
 For a native operation, the agent starts its hidden per-user watcher, launches
@@ -72,6 +72,17 @@ automatic connection does not turn an unknown outcome into permission to repeat.
 The automatic facade validates tool names and arguments before bootstrap. Its
 media policy is loaded lazily from existing approved local roots and published
 to the selected profile's runtime, including custom runtime locations.
+
+## Explicit project closure
+
+`resolve_close_project` uses the same canonical handler on both SDK transports.
+Its exact project ID, confirmation, save, backup, rendering and native readback
+checks are documented in [Close project](close-project.md). Its retries bypass
+readiness and resolve their original terminal receipt before any connection work.
+A durable pending close blocks recovery after uncertainty. A completed close
+suppresses automatic project reopening and idle SDK discovery. A freshly verified
+explicit project open releases this hold; replaying an old open receipt does not.
+An already open project can still be connected without reopening it.
 
 ## Capability evidence and validation
 

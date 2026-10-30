@@ -199,6 +199,13 @@ class StubResolveReader:
     ) -> dict[str, Any]:
         return {"items": [{"asset_id": "asset-1", "name": paths[0]}]}
 
+    def close_project(
+        self, expected_project_id: str, *, confirm_close: bool,
+        idempotency_key: str, timeout_seconds: float = 30,
+    ) -> dict[str, Any]:
+        assert confirm_close is True
+        return {"project": {"project_id": expected_project_id}, "closed": True}
+
     def create_project(
         self,
         name: str,
@@ -1553,6 +1560,7 @@ def test_mcp_exposes_fixed_m5_tool_surface() -> None:
         "resolve_get_render_options",
         "resolve_import_media",
         "resolve_create_project",
+        "resolve_close_project",
         "resolve_create_timeline",
         "resolve_ensure_timeline_tracks",
         "resolve_duplicate_timeline",

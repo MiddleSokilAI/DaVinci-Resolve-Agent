@@ -418,6 +418,9 @@ class ProjectOpenService:
             status="completed", native_binding=self._binding(active), result=result
         )
         atomic_json(path, receipt)
+        from providers.resolve.project_close_state import explicit_open_completed
+
+        explicit_open_completed(self.profile)
         return result
 
     def _wait(
@@ -547,6 +550,10 @@ class ProjectOpenService:
             folder.mkdir(exist_ok=True)
             path = folder / f"{digest}.json"
             with self._operation_until(deadline):
+                from providers.resolve.project_close_state import close_intent
+
+                if (close_intent(self.profile) or {}).get("phase") == "pending":
+                    raise ProjectOpenError("PROJECT_CLOSE_REQUIRES_RECOVERY")
                 records = dict(_receipts(self.profile))
                 receipt = records.get(path)
                 if receipt is not None:

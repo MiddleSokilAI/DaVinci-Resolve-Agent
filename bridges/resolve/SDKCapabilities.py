@@ -9,6 +9,12 @@ from typing import Any
 from bridges.resolve.ResolveBridge import atomic_write_json
 
 REQUIRED: dict[str, dict[str, tuple[str, ...]]] = {
+    "project.close": {
+        "ProjectManager": (
+            "CloseProject", "SaveProject", "ExportProject", "GetCurrentProject"
+        ),
+        "Project": ("GetUniqueId", "IsRenderingInProgress"),
+    },
     "project.create": {"ProjectManager": ("CreateProject", "SaveProject")},
     "timeline.create": {"MediaPool": ("CreateEmptyTimeline",)},
     "timeline.track.create": {"Timeline": ("AddTrack",)},

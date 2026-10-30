@@ -13,6 +13,7 @@ SDK_METHODS = frozenset(
         "AppendToTimeline",
         "CreateEmptyTimeline",
         "CreateProject",
+        "CloseProject",
         "CreateSubtitlesFromAudio",
         "DeleteClips",
         "DeleteRenderJob",
@@ -110,6 +111,7 @@ SDK_MUTATIONS = frozenset(
 SDK_INVALIDATES = SDK_MUTATIONS | {"OpenPage"}
 
 SDK_WRITE_METHODS: dict[str, tuple[str, ...]] = {
+    "close_project": ("CloseProject",),
     "create_project": ("CreateProject", "SetProperty"),
     "import_media": ("ImportMedia",),
     "create_timeline": ("CreateEmptyTimeline",),

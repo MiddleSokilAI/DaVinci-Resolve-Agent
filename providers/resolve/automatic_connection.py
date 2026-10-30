@@ -24,6 +24,7 @@ from providers.resolve.marker_supervisor import (
     read_active,
 )
 from providers.resolve.preset_channel import PresetSDKChannel
+from providers.resolve.project_close_state import close_intent
 from providers.resolve.project_open_service import (
     ProjectOpenError,
     ProjectOpenService,
@@ -178,6 +179,7 @@ class AutomaticConnection:
         timeout: float | None = None,
         *,
         require_sdk_channel: bool = True,
+        allow_project_open: bool = True,
     ) -> dict[str, Any]:
         if not self.profile.enabled:
             raise AutomaticConnectionError("AUTOMATIC_CONNECTION_DISABLED")
@@ -186,6 +188,13 @@ class AutomaticConnection:
         launched = False
         while time.monotonic() < deadline:
             active = read_active(self.profile)
+            closure = close_intent(self.profile)
+            if closure:
+                if closure["phase"] == "pending":
+                    raise AutomaticConnectionError("PROJECT_CLOSE_REQUIRES_RECOVERY")
+                host = self.adapter.inspect()
+                if host.get("state") != "project_window" or not host.get("eligible"):
+                    raise AutomaticConnectionError("PROJECT_CLOSED")
             if (
                 active
                 and active["phase"] == "connected"
@@ -215,6 +224,11 @@ class AutomaticConnection:
                         # Only inspection repeats; no launch or native/menu
                         # dispatch has occurred in this attempt.
                         host = {"state": "inspection_unavailable"}
+                    if host["state"] in {"resolve_not_running", "project_manager"}:
+                        if close_intent(self.profile):
+                            raise AutomaticConnectionError("PROJECT_CLOSED")
+                        if not allow_project_open:
+                            raise AutomaticConnectionError("NO_ACTIVE_PROJECT")
                     if host["state"] == "resolve_not_running":
                         if not launched:
                             executable = Path(_official_executable())

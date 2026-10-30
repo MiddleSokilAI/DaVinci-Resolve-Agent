@@ -162,6 +162,16 @@ class ResolveReader(Protocol):
     ) -> dict[str, Any]:
         """Import media files."""
 
+    def close_project(
+        self,
+        expected_project_id: str,
+        *,
+        confirm_close: bool,
+        timeout_seconds: float = 30,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        """Save, back up and close the exact current project."""
+
     def create_project(
         self,
         name: str,
@@ -1391,6 +1401,32 @@ class AgentApplication:
             normalized,
             timeout_seconds=self._validated_timeout(timeout_seconds),
             idempotency_key=idempotency_key,
+        )
+
+    def resolve_close_project(
+        self,
+        expected_project_id: str,
+        *,
+        confirm_close: bool,
+        idempotency_key: str,
+        timeout_seconds: float = 30,
+    ) -> dict[str, Any]:
+        """Close a confirmed native identity with a required stable retry key."""
+        if (
+            not isinstance(expected_project_id, str)
+            or not 1 <= len(expected_project_id) <= 128
+            or expected_project_id != expected_project_id.strip()
+            or any(ord(character) < 32 for character in expected_project_id)
+            or confirm_close is not True
+            or not isinstance(idempotency_key, str) or not idempotency_key.strip()
+        ):
+            raise ValueError(
+                "Closure requires an exact ID, confirmation and stable key."
+            )
+        return self._resolve.close_project(
+            expected_project_id, confirm_close=True,
+            idempotency_key=idempotency_key,
+            timeout_seconds=self._validated_timeout(timeout_seconds),
         )
 
     def resolve_create_project(

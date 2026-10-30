@@ -27,9 +27,15 @@ from providers.resolve.marker_supervisor import (
     OperationBusy,
     Profile,
     _lock,
+    _runtime,
     read_active,
 )
 from providers.resolve.marker_transport import MarkerLeaseKeeper, MarkerSlot
+from providers.resolve.project_close_state import (
+    close_intent,
+    finish_close,
+    prepare_close,
+)
 from providers.resolve.project_open_service import pending_project_open
 from providers.resolve.sdk_command_client import SDKCommandClient
 from providers.resolve.windows_bootstrap import _official_executable
@@ -162,8 +168,48 @@ class SDKWorker:
             raise RuntimeError("INVALID_NATIVE_PROJECT_PROOF")
         return "python_sdk", {**active, "sdk_expected_project_id": identity}
 
+    def _replay_close(self, path: Path, command: dict[str, Any]) -> bool:
+        """Read a terminal close receipt before connection.ensure can open anything."""
+        digest = hashlib.sha256(command["idempotency_key"].encode()).hexdigest()
+        receipt = self.profile.state_directory / "sdk-write-owners" / (digest + ".json")
+        if not receipt.exists() and not receipt.is_symlink():
+            return False
+        if receipt.is_symlink() or receipt.stat().st_size > 4 * 1024 * 1024:
+            raise RuntimeError("INVALID_SDK_WRITE_OWNER")
+        value = json.loads(receipt.read_text(encoding="utf-8"))
+        if value.get("fingerprint") != bridge._request_fingerprint(command):
+            raise RuntimeError("SDK_IDEMPOTENCY_CONFLICT")
+        if value.get("phase") != "completed":
+            raise RuntimeError("ORIGINAL_SDK_OPERATION_REQUIRES_RECOVERY")
+        response = dict(value["response"])
+        root = _runtime(self.profile, value["runtime"])
+        if (root / "inbox").exists():
+            slot = MarkerSlot.occupied(root, value["session"], 4096)
+            if (
+                slot.request["action"] == "sdk_operation"
+                and slot.identity == UUID(value["command_id"]).hex
+            ):
+                slot.clear()  # Complete exact terminal cleanup after a host crash.
+        finish_close(
+            self.profile, value["command_id"], closed=response["status"] == "success"
+        )
+        response["command_id"] = command["command_id"]
+        response["warnings"] = [
+            *response["warnings"], "Historical close receipt; no native call was sent."
+        ]
+        if response["status"] == "success":
+            response["result"] = {**response["result"], "replayed": True,
+                                  "evidence": "historical_completed_receipt"}
+        atomic_json(self.directories["responses"] / path.name, response)
+        path.unlink()
+        return True
+
     def process(self, path: Path) -> None:
         command = bridge.validate_command(json.loads(path.read_text(encoding="utf-8")))
+        if command["action"] == "close_project":
+            with wait_operation(self.profile, self.profile.startup_timeout_seconds):
+                if self._replay_close(path, command):
+                    return
         if any(self.directories["processing"].glob("*.json")):
             raise RuntimeError("ORIGINAL_COMMAND_REQUIRES_RECOVERY")
         # A previous process may have died after an SDK mutation. Reads must
@@ -175,7 +221,13 @@ class SDKWorker:
             value = json.loads(receipt.read_text(encoding="utf-8"))
             if value.get("phase") != "completed":
                 raise RuntimeError("ORIGINAL_SDK_OPERATION_REQUIRES_RECOVERY")
-        active = self.connection.ensure(require_sdk_channel=False)
+        active = self.connection.ensure(
+            require_sdk_channel=False,
+            **(
+                {"allow_project_open": False}
+                if command["action"] == "close_project" else {}
+            ),
+        )
         with wait_operation(self.profile, self.profile.startup_timeout_seconds):
             command = bridge.validate_command(command)
             current = read_active(self.profile)
@@ -234,6 +286,7 @@ class SDKWorker:
                 route_record = {
                     "generation": active["generation"],
                     "session": active["session"],
+                    "runtime": str(native_root),
                     "command_id": path.stem,
                     "fingerprint": fingerprint,
                     "phase": "prepared",
@@ -273,6 +326,11 @@ class SDKWorker:
             if route_record is not None and route_path is not None:
                 route_record.update(phase="dispatch_started", transport=route)
                 atomic_json(route_path, route_record)
+            if command["action"] == "close_project":
+                prepare_close(
+                    self.profile, command["command_id"],
+                    bridge._request_fingerprint(command),
+                )
             self._status("processing", transport=route, command_id=path.stem)
             try:
                 with MarkerLeaseKeeper(native_root):
@@ -316,6 +374,10 @@ class SDKWorker:
                         ),
                     )
                     atomic_json(route_path, route_record)
+                if command["action"] == "close_project":
+                    assert route_record is not None
+                    finish_close(self.profile, command["command_id"],
+                                 closed=route_record["response"]["status"] == "success")
                 if guard is not None:
                     guard.clear()
                 if command["action"] == "stop_bridge":
@@ -354,6 +416,7 @@ class SDKWorker:
                             continue
                         if (
                             active
+                            and not close_intent(self.profile)
                             and active["phase"] == "connected"
                             and process_alive(active["process"])
                             and not any(

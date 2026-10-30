@@ -604,3 +604,37 @@ def test_operation_body_is_never_retried(tmp_path: Path) -> None:
         attempts += 1
         raise OperationBusy("operation.lock")
     assert attempts == 1
+
+
+@pytest.mark.parametrize("historical", [False, True])
+def test_only_fresh_verified_open_releases_closed_project_hold(
+    fixture: Fixture, historical: bool,
+) -> None:
+    from uuid import uuid4
+
+    from providers.resolve.project_close_state import (
+        close_intent,
+        finish_close,
+        prepare_close,
+    )
+
+    if historical:
+        fixture.open()
+    identity = str(uuid4())
+    prepare_close(fixture.profile, identity, "a" * 64)
+    finish_close(fixture.profile, identity, closed=True)
+    fixture.open()
+    assert (close_intent(fixture.profile) is not None) is historical
+
+
+def test_open_refuses_pending_close_before_inspection_or_dispatch(
+    fixture: Fixture,
+) -> None:
+    from uuid import uuid4
+
+    from providers.resolve.project_close_state import prepare_close
+
+    prepare_close(fixture.profile, str(uuid4()), "a" * 64)
+    with pytest.raises(ProjectOpenError, match="PROJECT_CLOSE_REQUIRES_RECOVERY"):
+        fixture.open()
+    assert not fixture.inspections and not fixture.opens and not fixture.native_calls

@@ -188,6 +188,13 @@ class StubResolveReader:
         self.timeouts.append(timeout_seconds)
         return {"items": [{"asset_id": "asset-1", "name": paths[0]}]}
 
+    def close_project(
+        self, expected_project_id: str, *, confirm_close: bool,
+        idempotency_key: str, timeout_seconds: float = 30,
+    ) -> dict[str, Any]:
+        assert confirm_close is True
+        return {"project": {"project_id": expected_project_id}, "closed": True}
+
     def create_project(
         self,
         name: str,
@@ -1238,7 +1245,7 @@ def test_application_exposes_take_analysis_and_review_boundary() -> None:
     scripted = application.analyze_scripted_take_candidates(
         selection_name="Intro script",
         candidates=scripted_candidates,
-        reference_text="Очікуваний текст",
+        reference_text="РћС‡С–РєСѓРІР°РЅРёР№ С‚РµРєСЃС‚",
     )
     detail = application.get_take_selection("a" * 64)
     listed = application.list_take_selections(5)

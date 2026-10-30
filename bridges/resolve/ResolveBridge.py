@@ -74,6 +74,7 @@ COLOR_PRESETS = {
     }
 }
 ALLOWED_ACTIONS = {
+    "close_project",
     "create_project",
     "ping",
     "stop_bridge",
@@ -115,6 +116,7 @@ ALLOWED_ACTIONS = {
     "start_render_job",
 }
 WRITE_ACTIONS = {
+    "close_project",
     "create_project",
     "import_media",
     "create_timeline",
@@ -141,6 +143,7 @@ WRITE_ACTIONS = {
 }
 DESTRUCTIVE_ACTIONS = {"delete_clip"}
 CAPABILITY_BY_ACTION = {
+    "close_project": "project.close",
     "create_project": "project.create",
     "list_timeline_items": "clip.read",
     "list_media_pool_items": "media.read",
@@ -669,6 +672,22 @@ def _validate_write_arguments(action: str, arguments: dict[str, Any]) -> None:
             raise ValueError("paths must contain between 1 and 100 items.")
         if not all(isinstance(path, str) and path for path in paths):
             raise ValueError("Every media path must be a non-empty string.")
+        return
+    if action == "close_project":
+        if set(arguments) != {"expected_project_id", "confirm_close"}:
+            raise ValueError(
+                "close_project requires an exact project ID and confirmation."
+            )
+        identity = arguments["expected_project_id"]
+        if (
+            not isinstance(identity, str) or not 1 <= len(identity) <= 128
+            or identity != identity.strip()
+            or any(ord(character) < 32 for character in identity)
+            or arguments["confirm_close"] is not True
+        ):
+            raise ValueError(
+                "close_project requires a clean ID and confirm_close=true."
+            )
         return
     if action == "create_project":
         if set(arguments) != {"name", "confirm_create"}:
@@ -3496,6 +3515,79 @@ def _apply_verified_capabilities(
             capabilities[capability] = True
 
 
+def _execute_close_project(
+    resolve: Any,
+    command: dict[str, Any],
+    directories: dict[str, Path],
+) -> tuple[dict[str, Any], list[str]]:
+    """Save and back up one exact project, then verify native closure.
+
+    CloseProject itself does not save. Never discard changes or fall back to
+    closing another project. Receipts describe the original execution only.
+    """
+    manager = resolve.GetProjectManager()
+    required = ("GetCurrentProject", "SaveProject", "ExportProject", "CloseProject")
+    if manager is None or any(
+        not callable(getattr(manager, method, None)) for method in required
+    ):
+        raise BridgeOperationError(
+            "UNSUPPORTED_CAPABILITY", "Native project closure is unavailable."
+        )
+    expected = command["arguments"]["expected_project_id"]
+
+    def current_target() -> Any:
+        current = manager.GetCurrentProject()
+        if current is None or current.GetUniqueId() != expected:
+            raise BridgeOperationError(
+                "PROJECT_CHANGED", "The requested project is no longer current."
+            )
+        if current.IsRenderingInProgress() is not False:
+            raise BridgeOperationError(
+                "RENDER_ALREADY_IN_PROGRESS",
+                "Stop rendering before closing the project."
+            )
+        return current
+
+    project = current_target()
+    name = project.GetName()
+    backup_path = _create_project_backup(
+        manager, project, directories["backups"], command["command_id"]
+    )
+    try:
+        project = current_target()
+        if manager.SaveProject() is not True:
+            raise BridgeOperationError("PROJECT_SAVE_FAILED", "Project was not closed.")
+        project = current_target()
+        if manager.CloseProject(project) is not True:
+            raise BridgeOperationError(
+                "PROJECT_CLOSE_FAILED",
+                "Native closure was not acknowledged; do not retry."
+            )
+        if manager.GetCurrentProject() is not None:
+            raise BridgeOperationError(
+                "PROJECT_CLOSE_READBACK_FAILED",
+                "Project closure could not be verified."
+            )
+        result = {
+            "project": {"project_id": expected, "name": name},
+            "closed": True,
+            "saved": True,
+            "backup_path": backup_path,
+            "evidence": "native_readback_at_execution",
+        }
+        _write_receipt(command, directories["state"], result)
+        return result, []
+    except BridgeOperationError as error:
+        error.details.setdefault("backup_path", backup_path)
+        raise
+    except Exception as error:
+        raise BridgeOperationError(
+            "PROJECT_CLOSE_UNCERTAIN",
+            "Inspect original evidence before retrying closure.",
+            details={"backup_path": backup_path},
+        ) from error
+
+
 def _execute_create_project(
     resolve: Any,
     command: dict[str, Any],
@@ -3588,6 +3680,9 @@ def _execute_write_command(
     receipt = _read_receipt(command, directories["state"])
     if receipt is not None:
         return receipt, ["Returned the stored idempotent result."]
+
+    if command["action"] == "close_project":
+        return _execute_close_project(resolve, command, directories)
 
     if command["action"] == "create_project":
         return _execute_create_project(resolve, command, directories)
@@ -5749,13 +5844,19 @@ def process_command_file(
             capability = CAPABILITY_BY_ACTION[command["action"]]
             state["capabilities"][capability] = True
             _record_verified_capability(directories["state"], capability)
-            refreshed_state = collect_bridge_state(resolve)
-            _apply_verified_capabilities(
-                refreshed_state,
-                directories["state"],
-            )
-            state.clear()
-            state.update(refreshed_state)
+            if command["action"] == "close_project":
+                state.update(
+                    project_open=False, project_name=None, timelines=[],
+                    current_timeline_id=None, current_timeline_name=None,
+                )
+            else:
+                refreshed_state = collect_bridge_state(resolve)
+                _apply_verified_capabilities(
+                    refreshed_state,
+                    directories["state"],
+                )
+                state.clear()
+                state.update(refreshed_state)
         else:
             result = command_result(
                 command["action"],

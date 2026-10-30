@@ -172,6 +172,10 @@ class AutomaticServer(MCPServer[Any]):
             except (OSError, RuntimeError, ValueError) as error:
                 connection_error = getattr(error, "code", "automatic_connection_failed")
                 arguments = {**arguments, "verify_connection": False}
+                if connection_error in {
+                    "PROJECT_CLOSED", "PROJECT_CLOSE_REQUIRES_RECOVERY"
+                }:
+                    marker_arguments = {**marker_arguments, "verify_connection": False}
         tools = await self.list_tools()
         primary = await self.primary.call_tool("video_agent_capabilities", arguments)
         marker = await self.marker.call_tool(
@@ -251,7 +255,7 @@ class AutomaticServer(MCPServer[Any]):
             or name.startswith("resolve_")
             and not name.startswith("resolve_free_")
         ) and name != "resolve_verify_render_output"
-        if native:
+        if native and name != "resolve_close_project":
             if name in primary:
                 await _complete_work(self._ready())
             else:
