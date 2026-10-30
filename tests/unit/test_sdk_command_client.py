@@ -267,9 +267,9 @@ def test_status_sharing_violation_preserves_a_completed_write(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import providers.resolve.sdk_worker as module
+    from providers.resolve.lua_editing import atomic_json as publish
 
     worker, native, _ = setup_worker(tmp_path, monkeypatch)
-    publish = module.atomic_json
 
     def failed_status(path: Path, value: Any) -> None:
         if path == worker.status_path:
