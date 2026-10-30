@@ -31,6 +31,7 @@ from providers.resolve.project_open_service import (
 )
 from providers.resolve.windows_bootstrap import (
     WindowsBootstrapAdapter,
+    WindowsBootstrapError,
     _official_executable,
 )
 
@@ -204,7 +205,16 @@ class AutomaticConnection:
                     raise AutomaticConnectionError("SDK_CHANNEL_UNAVAILABLE")
             try:
                 with _lock(self.profile, "connection.lock"):
-                    host = self.adapter.inspect()
+                    try:
+                        host = self.adapter.inspect()
+                    except WindowsBootstrapError as error:
+                        if error.uncertain or error.code not in {
+                            "DRIVER_FAILURE", "TIMEOUT", "DRIVER_IO_FAILED"
+                        }:
+                            raise
+                        # Only inspection repeats; no launch or native/menu
+                        # dispatch has occurred in this attempt.
+                        host = {"state": "inspection_unavailable"}
                     if host["state"] == "resolve_not_running":
                         if not launched:
                             executable = Path(_official_executable())

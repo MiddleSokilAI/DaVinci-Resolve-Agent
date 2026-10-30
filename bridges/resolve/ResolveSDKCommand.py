@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import re
 import sys
 from pathlib import Path
@@ -19,6 +20,7 @@ def main() -> int:
     parser.add_argument("--probe", action="store_true")
     parser.add_argument("--runtime", type=Path)
     parser.add_argument("--command")
+    parser.add_argument("--expected-project-id")
     args = parser.parse_args()
     import DaVinciResolveScript  # type: ignore[import-not-found]
 
@@ -30,6 +32,7 @@ def main() -> int:
         return 3
     if (
         args.runtime is None
+        or not args.expected_project_id
         or args.command is None
         or not re.fullmatch(
             r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}",
@@ -37,6 +40,10 @@ def main() -> int:
         )
     ):
         parser.error("An owned runtime and one canonical command UUID are required.")
+    project = resolve.GetProjectManager().GetCurrentProject()
+    if project is None or project.GetUniqueId() != args.expected_project_id:
+        # No queue claim, backup or native mutation occurred in this binding.
+        return 4
     root = args.runtime.resolve()
     directories = bridge.ensure_runtime_directories(root)
     source = directories["commands"] / (args.command + ".json")
@@ -61,7 +68,6 @@ def main() -> int:
         resolve,
         directories,
     )
-    augment_sdk_state(state, resolve, directories["state"], transport="python_sdk")
     bridge.atomic_write_json(
         directories["state"] / (args.command + ".sdk.json"),
         {
@@ -69,11 +75,15 @@ def main() -> int:
             "mutations_sent": tracker.mutations_sent,
         },
     )
-    bridge.publish_bridge_state(
-        directories["state"] / "bridge.json",
-        state,
-        directories["logs"] / "bridge.jsonl",
-    )
+    try:
+        augment_sdk_state(state, resolve, directories["state"], transport="python_sdk")
+        bridge.publish_bridge_state(
+            directories["state"] / "bridge.json",
+            state,
+            directories["logs"] / "bridge.jsonl",
+        )
+    except Exception:
+        logging.getLogger(__name__).exception("SDK state refresh failed")
     return 0
 
 

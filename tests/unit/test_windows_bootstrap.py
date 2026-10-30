@@ -579,7 +579,8 @@ def test_driver_parses_without_running_its_entrypoint() -> None:
 
 
 @pytest.mark.parametrize(
-    "mode", ["nested", "automation-id", "duplicate", "ambiguous", "foreign", "group"]
+    "mode", ["nested", "automation-id", "duplicate", "ambiguous", "foreign", "group",
+             "manager", "hidden-manager", "wrong-manager", "manager-and-editor"]
 )
 def test_synthetic_discovery_finds_only_unique_editor_identity(mode: str) -> None:
     result = _offline_powershell(
@@ -609,6 +610,14 @@ def test_synthetic_discovery_finds_only_unique_editor_identity(mode: str) -> Non
             $editor.Current.ClassName='QtWindow';
             $editor.Current.AutomationId='UiMainWindow'
         }
+        if($mode -in @('manager','hidden-manager','wrong-manager',
+                      'manager-and-editor')) {
+            $editor.Current.ClassName='ProjectManager::UiProjectManagerDialogImp';
+            $editor.Current.AutomationId='UiProjectManagerDialog';
+            $editor.Current.Name='Project Manager';
+            if($mode -ceq 'hidden-manager') { $editor.Current.IsOffscreen=$true }
+            if($mode -ceq 'wrong-manager') { $editor.Current.AutomationId='Other' }
+        }
         if($mode -ceq 'foreign') { $editor.Current.ProcessId=999 }
         if($mode -ceq 'group') {
             $editor.Current.ControlType=[System.Windows.Automation.ControlType]::Group
@@ -616,7 +625,7 @@ def test_synthetic_discovery_finds_only_unique_editor_identity(mode: str) -> Non
         $generic=New-Element 1 'QtContainer' '' 111 123 $window @($editor);
         $roots=@($generic);
         if($mode -ceq 'duplicate') { $roots+=,$editor }
-        if($mode -ceq 'ambiguous') {
+        if($mode -in @('ambiguous','manager-and-editor')) {
             $roots+=,(New-Element 3 'UiMainWindow' '' 789 123 $window @())
         }
         $failed=$false; $handle=$null;
@@ -630,9 +639,9 @@ def test_synthetic_discovery_finds_only_unique_editor_identity(mode: str) -> Non
     """,
         mode,
     )
-    assert result["failed"] is (mode == "ambiguous")
+    assert result["failed"] is (mode in {"ambiguous", "manager-and-editor"})
     assert result["handle"] == (
-        456 if mode in {"nested", "automation-id", "duplicate"} else None
+        456 if mode in {"nested", "automation-id", "duplicate", "manager"} else None
     )
     assert len(result["candidates"]) >= 2
 

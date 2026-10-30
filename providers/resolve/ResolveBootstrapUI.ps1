@@ -215,18 +215,26 @@ function Find-BootstrapMainInRoots([object[]]$Roots,[long]$ProcessId) {
     $editorCondition=[System.Windows.Automation.OrCondition]::new($classCondition,
         [System.Windows.Automation.PropertyCondition]::new(
             [System.Windows.Automation.AutomationElement]::AutomationIdProperty,'UiMainWindow'))
+    $managerCondition=[System.Windows.Automation.PropertyCondition]::new(
+        [System.Windows.Automation.AutomationElement]::AutomationIdProperty,'UiProjectManagerDialog')
+    $windowCondition=[System.Windows.Automation.OrCondition]::new($editorCondition,$managerCondition)
     $windows=@(); $seen=@{}
     foreach ($root in $Roots) {
         # Qt can expose the editor below a generic top-level Resolve container.
         # Search only that process's roots and the observed fixed editor identity.
         $candidates=@($root)
-        $candidates+=@($root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$editorCondition))
+        $candidates+=@($root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$windowCondition))
         if ($candidates.Count -gt 64) { Fail-Bootstrap 'WINDOW_TREE_LIMIT' }
         foreach ($candidate in $candidates) {
             Add-BootstrapWindowCandidate $candidate
+            # On a cold launch only the Project Manager window exists. Bind its
+            # exact observed identity; generic Qt containers are not editors.
+            $manager=($candidate.Current.ClassName -ceq 'ProjectManager::UiProjectManagerDialogImp' -and
+                $candidate.Current.AutomationId -ceq 'UiProjectManagerDialog' -and
+                $candidate.Current.Name -ceq 'Project Manager' -and -not $candidate.Current.IsOffscreen)
             if ($candidate.Current.ProcessId -ne $ProcessId -or
                 ($candidate.Current.ClassName -cnotin @('UiMainWindowImp','UiMainWindow') -and
-                    $candidate.Current.AutomationId -cne 'UiMainWindow') -or
+                    $candidate.Current.AutomationId -cne 'UiMainWindow' -and -not $manager) -or
                 $candidate.Current.ControlType -ne [System.Windows.Automation.ControlType]::Window -or
                 $candidate.Current.NativeWindowHandle -le 0) { continue }
             $identity=$candidate.GetRuntimeId() -join ':'

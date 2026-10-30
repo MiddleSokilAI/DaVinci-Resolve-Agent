@@ -33,7 +33,9 @@ confirmation and live-acceptance restrictions. Legacy `--backend python` and
 
 The worker probes Resolve's bundled external Python SDK once per OS process
 identity. If it returns a Resolve object, the canonical command runs through
-that SDK. Otherwise, the same `ResolveBridge.py` command handlers run on the host
+that SDK after matching its project UUID to fresh Lua evidence from the owned
+native session. A mismatched binding never claims or executes the command.
+Otherwise, the same `ResolveBridge.py` command handlers run on the host
 against opaque SDK object proxies in the native Lua bridge. This gives the main
 workflows their original command, receipt, backup and readback semantics on Free.
 
@@ -47,10 +49,17 @@ interpreted. Files remain local to the owned runtime.
 ## Write and recovery guarantees
 
 - One coordinator lock covers each complete native operation.
+- Queued commands run in arrival order. Background discovery waits until recent
+  client work is idle and any project-open verification has completed.
 - A durable key belongs to its original request, transport and native generation.
+  SDK ownership uses a versioned record rejected by older marker clients too;
+  switching tool families cannot bypass the original receipt, even in one session.
 - Native Lua verifies a successful project backup before content mutations and
   rechecks observed SDK values immediately before mutation.
 - A completed operation returns its stored result without another SDK call.
+  Optional state/discovery refresh failures preserve a known canonical result.
+- A failed guard publication before SDK dispatch stores a terminal rejection and
+  releases its owned guard; unrelated subsequent commands remain usable.
 - A timeout or failure after write dispatch retains its evidence and gate.
   It never retries the write through another transport or a new key.
 - Rotation refuses occupied SDK slots and uncertain write records. Lock files
@@ -59,6 +68,10 @@ interpreted. Files remain local to the owned runtime.
 Known clean native exits can create a fresh managed session automatically.
 Ambiguous writes and uncertain script dispatch remain blocked for inspection;
 automatic connection does not turn an unknown outcome into permission to repeat.
+
+The automatic facade validates tool names and arguments before bootstrap. Its
+media policy is loaded lazily from existing approved local roots and published
+to the selected profile's runtime, including custom runtime locations.
 
 ## Capability evidence and validation
 
