@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
@@ -139,6 +140,9 @@ def setup_worker(
     monkeypatch.setattr(worker.connection, "ensure", lambda **kwargs: active)
     monkeypatch.setattr(worker, "_external_available", lambda active: False)
     monkeypatch.setattr(module, "read_active", lambda profile: active)
+    monkeypatch.setattr(module, "LuaSnapshotClient", lambda root: SimpleNamespace(
+        request=lambda *args: {"project": {"id": native.project.GetUniqueId()}},
+    ))
     monkeypatch.setattr(
         module,
         "SDKCommandClient",
@@ -168,8 +172,161 @@ def test_worker_replays_terminal_result_without_second_edit(
     worker, native, active = setup_worker(tmp_path, monkeypatch)
     worker.process(queued(worker, "create_timeline", {"name": "One"}, "key"))
     assert not (Path(active["runtime"]) / "inbox").exists()
+    monkeypatch.setattr(worker, "_select_route", lambda active: pytest.fail(
+        "Completed replay probed or contacted a native provider"
+    ))
     worker.process(queued(worker, "create_timeline", {"name": "One"}, "key"))
     assert native.project_manager.export_count == 1
+
+
+def test_previous_sdk_owner_is_upgraded_before_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mcp_server.managed_marker import OriginalGenerationRequired, claim_write_key
+
+    worker, native, active = setup_worker(tmp_path, monkeypatch)
+    worker.process(queued(worker, "create_timeline", {"name": "One"}, "key"))
+    path = worker.profile.state_directory / "write-owners" / (
+        hashlib.sha256(b"key").hexdigest() + ".json"
+    )
+    previous = json.loads(path.read_text())
+    previous.pop("route")
+    previous["schema"] = 1
+    bridge.atomic_write_json(path, previous)
+    worker.process(queued(worker, "create_timeline", {"name": "One"}, "key"))
+    assert json.loads(path.read_text())["schema"] == 2
+    with pytest.raises(OriginalGenerationRequired, match="route"):
+        claim_write_key(worker.profile, active, "key")
+    assert native.project_manager.export_count == 1
+
+
+def test_sdk_reservation_without_dispatch_can_resume_same_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mcp_server.managed_marker import claim_write_key
+
+    worker, native, active = setup_worker(tmp_path, monkeypatch)
+    claim_write_key(worker.profile, active, "key", route="sdk")
+    worker.process(queued(worker, "create_timeline", {"name": "One"}, "key"))
+    assert native.project_manager.export_count == 1
+
+
+def test_sdk_key_cannot_be_reused_by_legacy_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mcp_server.managed_marker import OriginalGenerationRequired, claim_write_key
+
+    worker, native, active = setup_worker(tmp_path, monkeypatch)
+    worker.process(queued(worker, "create_timeline", {"name": "One"}, "key"))
+    with pytest.raises(OriginalGenerationRequired, match="route"):
+        claim_write_key(worker.profile, active, "key")
+    assert native.project_manager.export_count == 1
+
+
+def test_static_marker_receipt_in_current_session_blocks_sdk_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mcp_server.managed_marker import OriginalGenerationRequired
+
+    worker, native, active = setup_worker(tmp_path, monkeypatch)
+    receipts = Path(active["runtime"]) / "receipts"
+    receipts.mkdir(exist_ok=True)
+    (receipts / (hashlib.sha256(b"key").hexdigest() + ".json")).write_text(
+        '{"status":"completed"}'
+    )
+    with pytest.raises(OriginalGenerationRequired, match="receipt"):
+        worker.process(queued(worker, "create_timeline", {"name": "One"}, "key"))
+    assert native.project_manager.export_count == 0
+
+
+def test_post_command_state_publication_failure_keeps_known_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker, native, active = setup_worker(tmp_path, monkeypatch)
+
+    def failed(*args: Any, **kwargs: Any) -> None:
+        raise OSError("state publication failed after canonical readback")
+
+    monkeypatch.setattr(bridge, "publish_bridge_state", failed)
+    first = queued(worker, "create_timeline", {"name": "One"}, "key")
+    worker.process(first)
+    response = json.loads((worker.directories["responses"] / first.name).read_text())
+    assert response["status"] == "success"
+    worker.process(queued(worker, "create_timeline", {"name": "One"}, "key"))
+    assert not (Path(active["runtime"]) / "inbox").exists()
+    assert native.project_manager.export_count == 1
+
+
+def test_guard_publication_failure_does_not_poison_subsequent_commands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from providers.resolve.marker_transport import MarkerSlot
+
+    worker, native, active = setup_worker(tmp_path, monkeypatch)
+    publish = MarkerSlot.publish
+
+    def failed(self: MarkerSlot, deadline: float) -> None:
+        raise OSError("failed before SDK dispatch")
+
+    monkeypatch.setattr(MarkerSlot, "publish", failed)
+    first = queued(worker, "create_timeline", {"name": "Rejected"}, "key")
+    worker.process(first)
+    response = json.loads((worker.directories["responses"] / first.name).read_text())
+    assert response["error"]["code"] == "SDK_PRE_DISPATCH_FAILED"
+    assert native.project_manager.export_count == 0
+    monkeypatch.setattr(MarkerSlot, "publish", publish)
+    worker.process(queued(worker, "get_capabilities", {}, "read"))
+    worker.process(queued(worker, "create_timeline", {"name": "Allowed"}, "new-key"))
+    worker.process(queued(worker, "create_timeline", {"name": "Rejected"}, "key"))
+    assert not (Path(active["runtime"]) / "inbox").exists()
+    assert native.project_manager.export_count == 1
+
+
+def test_marker_owned_key_cannot_enter_sdk_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mcp_server.managed_marker import OriginalGenerationRequired, claim_write_key
+
+    worker, native, active = setup_worker(tmp_path, monkeypatch)
+    claim_write_key(worker.profile, active, "key")
+    with pytest.raises(OriginalGenerationRequired, match="route"):
+        worker.process(queued(worker, "create_timeline", {"name": "One"}, "key"))
+    assert native.project_manager.export_count == 0
+
+
+@pytest.mark.parametrize("matching", [False, True])
+def test_external_helper_checks_native_project_and_preserves_terminal_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, matching: bool,
+) -> None:
+    import sys
+
+    from bridges.resolve import ResolveSDKCommand as helper
+
+    native = FakeResolve()
+    worker, _, _ = setup_worker(tmp_path, monkeypatch)
+    path = queued(worker, "create_timeline", {"name": "External"}, "key")
+    monkeypatch.setitem(sys.modules, "DaVinciResolveScript", SimpleNamespace(
+        scriptapp=lambda name: native,
+    ))
+    monkeypatch.setattr(sys, "argv", [
+        "ResolveSDKCommand.py", "--runtime", str(worker.root), "--command", path.stem,
+        "--expected-project-id", native.project.GetUniqueId() if matching else "other",
+    ])
+
+    def failed(*args: Any, **kwargs: Any) -> None:
+        raise OSError("optional state publication failed")
+
+    monkeypatch.setattr(bridge, "publish_bridge_state", failed)
+    assert helper.main() == (0 if matching else 4)
+    assert native.project_manager.export_count == (1 if matching else 0)
+    assert path.exists() is not matching
+    if matching:
+        response = json.loads((worker.directories["responses"] / path.name).read_text())
+        assert response["status"] == "success"
+        trace = json.loads(
+            (worker.directories["state"] / (path.stem + ".sdk.json")).read_text()
+        )
+        assert trace["mutations_sent"] > 0
 
 
 def test_unknown_native_write_retains_guard_and_blocks_all_new_dispatch(

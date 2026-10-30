@@ -12,6 +12,7 @@ import pytest
 
 import mcp_server.automatic as facade
 import providers.resolve.automatic_connection as module
+from agent.client import FilesystemCommandClient
 from agent.contracts import validate_contract
 from mcp_server.automatic import AutomaticServer
 from providers.resolve.automatic_connection import (
@@ -56,6 +57,46 @@ def test_live_process_and_sdk_session_need_no_foreground_or_ui(
         type(connection.adapter), "inspect", lambda self: pytest.fail("UI used")
     )
     assert connection.ensure() is active
+
+
+@pytest.mark.parametrize("code,uncertain,retry", [
+    ("DRIVER_FAILURE", False, True), ("TIMEOUT", False, True),
+    ("DRIVER_FAILURE", True, False), ("WRONG_PROCESS", False, False),
+])
+def test_only_transient_read_only_inspection_is_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    code: str, uncertain: bool, retry: bool,
+) -> None:
+    from providers.resolve.windows_bootstrap import WindowsBootstrapError
+
+    profile = profile_at(tmp_path)
+    native = profile.runtime_base / "native"
+    native.mkdir()
+    (native / "sdk-template.preset").touch()
+    active = {"runtime": str(native), "phase": "connected", "process": {}}
+    selected: dict[str, Any] = {"active": None}
+    monkeypatch.setattr(module, "read_active", lambda profile: selected["active"])
+    monkeypatch.setattr(module, "process_alive", lambda process: True)
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
+    connection = AutomaticConnection(profile)
+    calls = 0
+
+    def inspect(self: Any) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise WindowsBootstrapError(code, uncertain=uncertain)
+        selected["active"] = active
+        return {"state": "window_unavailable"}
+
+    monkeypatch.setattr(type(connection.adapter), "inspect", inspect)
+    if retry:
+        assert connection.ensure() is active
+        assert calls == 2
+    else:
+        with pytest.raises(WindowsBootstrapError):
+            connection.ensure()
+        assert calls == 1
 
 
 def test_wait_retries_lock_acquisition_but_never_its_body(tmp_path: Path) -> None:
@@ -227,3 +268,56 @@ def test_legacy_native_tools_do_not_depend_on_the_primary_sdk_queue(
         asyncio.run(server.call_tool("resolve_lua_get_project", {}))
         == "native marker result"
     )
+
+
+def test_media_policy_is_published_to_the_selected_profile_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import agent.media as media
+
+    profile = profile_at(tmp_path, enabled=False)
+    clip = tmp_path / "clip.wav"
+    clip.write_bytes(b"test media")
+    monkeypatch.setattr(media, "load_config", lambda path: {
+        "media": {"allowed_roots": [str(tmp_path)]},
+    })
+    monkeypatch.setattr(media, "runtime_directory", lambda: tmp_path / "wrong-runtime")
+    server = AutomaticServer(profile, start_worker=False)
+
+    async def ready() -> None:
+        pass
+
+    def request(self: Any, **kwargs: Any) -> dict[str, Any]:
+        assert kwargs["action"] == "import_media"
+        policy = json.loads(
+            (profile.runtime_base / "state/media-policy.json").read_text()
+        )
+        assert str(tmp_path.resolve()) in policy["allowed_roots"]
+        return {"imported_count": 1}
+
+    monkeypatch.setattr(server, "_ready", ready)
+    monkeypatch.setattr(FilesystemCommandClient, "request", request)
+    result = asyncio.run(
+        server.call_tool("resolve_import_media", {"paths": [str(clip)]})
+    )
+    assert not result.is_error
+    assert not (tmp_path / "wrong-runtime/state/media-policy.json").exists()
+
+
+@pytest.mark.parametrize("name,arguments", [
+    ("resolve_nonexistent", {}),
+    ("resolve_create_timeline", {}),
+    ("video_agent_capabilities", {"verify_connection": "true"}),
+])
+def test_invalid_calls_do_not_bootstrap_resolve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    name: str, arguments: dict[str, Any],
+) -> None:
+    server = AutomaticServer(profile_at(tmp_path, enabled=False), start_worker=False)
+
+    async def forbidden() -> None:
+        pytest.fail("Invalid request launched native connection")
+
+    monkeypatch.setattr(server, "_ready", forbidden)
+    result = asyncio.run(server.call_tool(name, arguments))
+    assert result.is_error

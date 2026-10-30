@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -124,12 +125,6 @@ class SDKCommandClient(FilesystemCommandClient):
                 native,
                 directories,
             )
-            augment_sdk_state(state, native, directories["state"])
-            bridge.publish_bridge_state(
-                directories["state"] / "bridge.json",
-                state,
-                directories["logs"] / "bridge.jsonl",
-            )
             if is_write:
                 response = json.loads(response_path.read_text(encoding="utf-8"))
                 if response["status"] != "success" and sdk.mutations_sent:
@@ -141,6 +136,18 @@ class SDKCommandClient(FilesystemCommandClient):
                     response=response,
                 )
                 atomic_json(ledger, record)
+            # The canonical command has already backed up, read back and
+            # persisted its outcome. Optional discovery/state refresh must not
+            # turn that known result into an uncertain write or a lost response.
+            try:
+                augment_sdk_state(state, native, directories["state"])
+                bridge.publish_bridge_state(
+                    directories["state"] / "bridge.json",
+                    state,
+                    directories["logs"] / "bridge.jsonl",
+                )
+            except Exception:
+                logging.getLogger(__name__).exception("SDK state refresh failed")
             return self._read_response(command_id, response_path)
         except Exception:
             if is_write and record["phase"] != "completed":

@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from jsonschema import ValidationError, validate
 from mcp.server import MCPServer
 from mcp.types import CallToolResult, TextContent, Tool
 
@@ -19,12 +20,27 @@ from agent.contracts import validate_contract
 from agent.media import MediaPolicy, MediaPolicyError
 from agent.paths import runtime_directory
 from agent.workflow_audit import WorkflowAuditLog
-from mcp_server.managed_marker import ManagedMarkerServer, _complete_work
+from mcp_server.managed_marker import ManagedMarkerServer, _complete_work, _error
 from mcp_server.server import create_server as create_primary
 from providers.resolve.automatic_connection import AutomaticConnection, wait_operation
 from providers.resolve.client import ResolveProviderClient
 from providers.resolve.lua_editing import atomic_json
 from providers.resolve.marker_supervisor import Profile
+
+
+class _RuntimeMediaPolicy:
+    """Load approved local roots lazily and publish to the selected queue."""
+
+    def __init__(self, runtime: Path) -> None:
+        self.runtime = runtime
+
+    def prepare_import(self, paths: list[str]) -> list[str]:
+        policy = MediaPolicy.from_local_config(runtime_root=self.runtime)
+        return policy.prepare_import(paths)
+
+    def validate_files(self, paths: list[str]) -> list[str]:
+        policy = MediaPolicy.from_local_config(runtime_root=self.runtime)
+        return policy.validate_files(paths)
 
 
 def default_profile(path: Path | None = None) -> Profile:
@@ -81,6 +97,7 @@ class AutomaticServer(MCPServer[Any]):
                 ),
                 state_loader=lambda: load_bridge_state(profile.runtime_base),
                 workflow_audit=WorkflowAuditLog(profile.runtime_base / "logs"),
+                media_policy=_RuntimeMediaPolicy(profile.runtime_base),
             )
         )
         self.marker = ManagedMarkerServer(
@@ -218,6 +235,13 @@ class AutomaticServer(MCPServer[Any]):
         arguments: dict[str, Any],
         context: Any = None,
     ) -> Any:
+        definitions = {tool.name: tool for tool in await self.list_tools()}
+        if name not in definitions:
+            return _error("UNKNOWN_TOOL", f"Unknown tool: {name}")
+        try:
+            validate(arguments, definitions[name].input_schema)
+        except ValidationError as error:
+            return _error("INVALID_ARGUMENTS", error.message)
         if name == "video_agent_capabilities":
             return await _complete_work(self._capabilities(arguments))
         primary = {tool.name for tool in await self.primary.list_tools()}

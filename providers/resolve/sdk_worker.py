@@ -125,6 +125,8 @@ class SDKWorker:
                 str(self.root),
                 "--command",
                 path.stem,
+                "--expected-project-id",
+                active["sdk_expected_project_id"],
             ],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -136,6 +138,21 @@ class SDKWorker:
             time.sleep(0.1)
         if process.returncode != 0:
             raise RuntimeError("EXTERNAL_SDK_COMMAND_UNCERTAIN")
+
+    def _select_route(self, active: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        if not self._external_available(active):
+            return "lua_marker_preset", active
+        # Prove the binding before occupying the native inbox. scriptapp()
+        # can attach another project; the helper checks this fresh identity.
+        root = Path(active["runtime"])
+        with MarkerLeaseKeeper(root):
+            proof = LuaSnapshotClient(root).request(
+                "get_current_project", self.profile.native_timeout_seconds
+            )
+        identity = proof["project"]["id"]
+        if not isinstance(identity, str) or not 1 <= len(identity) <= 128:
+            raise RuntimeError("INVALID_NATIVE_PROJECT_PROOF")
+        return "python_sdk", {**active, "sdk_expected_project_id": identity}
 
     def process(self, path: Path) -> None:
         command = bridge.validate_command(json.loads(path.read_text(encoding="utf-8")))
@@ -184,24 +201,14 @@ class SDKWorker:
                 if pending_project_open(self.profile)["pending"]:
                     raise RuntimeError("PROJECT_OPEN_VERIFICATION_PENDING")
                 digest = hashlib.sha256(command["idempotency_key"].encode()).hexdigest()
-                old_owner = (
-                    self.profile.state_directory / "write-owners" / f"{digest}.json"
-                )
-                sdk_owner = (
-                    self.directories["state"] / "sdk-operations" / f"{digest}.json"
-                )
                 routes = self.profile.state_directory / "sdk-write-owners"
                 routes.mkdir(exist_ok=True)
                 if routes.is_symlink():
                     raise RuntimeError("LINKED_SDK_WRITE_OWNERS")
                 route_path = routes / f"{digest}.json"
-                if (
-                    old_owner.exists()
-                    and not route_path.exists()
-                    and not sdk_owner.exists()
-                ):
-                    raise RuntimeError("KEY_BELONGS_TO_ORIGINAL_LEGACY_OPERATION")
-                claim_write_key(self.profile, active, command["idempotency_key"])
+                claim_write_key(
+                    self.profile, active, command["idempotency_key"], route="sdk"
+                )
                 fingerprint = bridge._request_fingerprint(command)
                 if route_path.exists():
                     if route_path.is_symlink():
@@ -216,6 +223,7 @@ class SDKWorker:
                         path.unlink()
                         return
                     raise RuntimeError("ORIGINAL_SDK_OPERATION_REQUIRES_RECOVERY")
+                route, active = self._select_route(active)
                 route_record = {
                     "generation": active["generation"],
                     "session": active["session"],
@@ -234,12 +242,27 @@ class SDKWorker:
                     },
                     4096,
                 )
-                guard.publish(time.monotonic() + 10)
-            route = (
-                "python_sdk"
-                if self._external_available(active)
-                else "lua_marker_preset"
-            )
+                try:
+                    guard.publish(time.monotonic() + 10)
+                except Exception as error:
+                    # This guard is ignored by Lua and no SDK call has begun.
+                    # A known pre-dispatch failure must not poison every later
+                    # read/write as an uncertain native operation.
+                    self._error(path, "SDK_PRE_DISPATCH_FAILED", str(error))
+                    route_record.update(
+                        phase="completed",
+                        response=json.loads(
+                            (self.directories["responses"] / path.name).read_text(
+                                encoding="utf-8"
+                            )
+                        ),
+                    )
+                    atomic_json(route_path, route_record)
+                    if guard.published:
+                        guard.clear()
+                    return
+            else:
+                route, active = self._select_route(active)
             if route_record is not None and route_path is not None:
                 route_record.update(phase="dispatch_started", transport=route)
                 atomic_json(route_path, route_record)

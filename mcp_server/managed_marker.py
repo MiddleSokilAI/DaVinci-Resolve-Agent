@@ -89,9 +89,15 @@ def _read_owner(path: Path) -> dict[str, Any]:
     if path.is_symlink() or not path.is_file() or path.stat().st_size > 8192:
         raise ValueError("Invalid managed write ownership record.")
     value = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(value, dict) or set(value) != {
-        "schema", "runtime", "session", "generation"
-    } or type(value["schema"]) is not int or value["schema"] != 1 or any(
+    if not isinstance(value, dict):
+        raise ValueError("Invalid managed write ownership record.")
+    fields = {"schema", "runtime", "session", "generation"}
+    version = value.get("schema")
+    if version == 2:
+        fields.add("route")
+    if set(value) != fields or type(version) is not int or version not in {1, 2} or (
+        version == 2 and value.get("route") != "sdk"
+    ) or any(
         not isinstance(value[field], str) or not value[field]
         for field in ("runtime", "session", "generation")
     ):
@@ -100,7 +106,7 @@ def _read_owner(path: Path) -> dict[str, Any]:
 
 
 def claim_write_key(
-    profile: Profile, active: dict[str, Any], key: str
+    profile: Profile, active: dict[str, Any], key: str, *, route: str = "marker"
 ) -> None:
     """Reserve a key before dispatch; a rotation never resets its ownership.
 
@@ -108,6 +114,8 @@ def claim_write_key(
     adopted static MCP client cannot evade ownership by writing outside us.
     """
     bounded_text(key, "Idempotency key")
+    if route not in {"marker", "sdk"}:
+        raise ValueError("Unknown managed write route.")
     digest = hashlib.sha256(key.encode()).hexdigest()
     host_receipt = profile.state_directory / "project-open-receipts" / f"{digest}.json"
     if host_receipt.exists() or host_receipt.is_symlink():
@@ -121,6 +129,11 @@ def claim_write_key(
     folder.mkdir(exist_ok=True)
     path = folder / f"{digest}.json"
     current = Path(active["runtime"]).resolve()
+    sdk_records = (
+        profile.state_directory / "sdk-write-owners" / f"{digest}.json",
+        profile.runtime_base / "state/sdk-operations" / f"{digest}.json",
+    )
+    sdk_evidence = any(item.exists() or item.is_symlink() for item in sdk_records)
     if path.exists() or path.is_symlink():
         previous = _read_owner(path)
         if (
@@ -133,9 +146,21 @@ def claim_write_key(
                 f"{previous['runtime']}. Inspect/reconcile that original receipt; "
                 "no command was dispatched into the current generation."
             )
+        previous_route = previous.get("route", "sdk" if sdk_evidence else "marker")
+        if previous_route != route:
+            raise OriginalGenerationRequired(
+                "Idempotency key belongs to its original native route; "
+                "inspect that route's receipt. No mutation was dispatched."
+            )
+        if route == "sdk" and previous["schema"] == 1:
+            # Older cached marker clients accept only schema 1. Schema 2 makes
+            # them fail closed rather than replay SDK keys into Lua receipts.
+            atomic_json(path, {**previous, "schema": 2, "route": "sdk"})
         return
-    for previous_root in runtime_history(profile):
-        if previous_root.resolve() == current:
+    if route == "marker" and sdk_evidence:
+        raise OriginalGenerationRequired("Idempotency key belongs to the SDK route.")
+    for previous_root in [current, *runtime_history(profile)]:
+        if previous_root.resolve() == current and route == "marker":
             continue
         receipt = previous_root / "receipts" / f"{digest}.json"
         if receipt.exists() or receipt.is_symlink():
@@ -144,10 +169,11 @@ def claim_write_key(
                 "Recover the original operation; no new mutation was dispatched."
             )
     atomic_json(path, {
-        "schema": 1,
+        "schema": 2 if route == "sdk" else 1,
         "runtime": str(current),
         "session": active["session"],
         "generation": active["generation"],
+        **({"route": "sdk"} if route == "sdk" else {}),
     })
 
 
