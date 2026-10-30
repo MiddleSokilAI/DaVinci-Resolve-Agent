@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -37,7 +38,7 @@ POLICY: Final[dict[str, Any]] = {
     "sampling": {
         "video_fraction_count": len(VIDEO_SAMPLE_FRACTIONS),
         "audio_sample_limit": AUDIO_SAMPLE_LIMIT,
-        "fingerprint_edge_bytes": 1_048_576,
+        "fingerprint_algorithm": "sha256-full-file-v2",
     },
     "weights": {"video": 0.75, "audio": 0.25},
 }
@@ -641,14 +642,25 @@ def _observations(
 
 
 def _file_fingerprint(path: Path, size: int) -> str:
+    """Hash every byte with bounded memory and reject concurrent source changes.
+
+    The domain separates full-file identities from legacy edge-only hashes.
+    Old approvals must be regenerated; they must never silently bind new media.
+    """
     digest = hashlib.sha256()
+    digest.update(b"sha256-full-file-v2\0")
     digest.update(str(size).encode())
-    edge = POLICY["sampling"]["fingerprint_edge_bytes"]
     with path.open("rb") as source:
-        digest.update(source.read(edge))
-        if size > edge:
-            source.seek(max(0, size - edge))
-            digest.update(source.read(edge))
+        before = os.fstat(source.fileno())
+        if before.st_size != size:
+            raise TakeSelectionError("Media source changed before fingerprinting.")
+        while chunk := source.read(1_048_576):
+            digest.update(chunk)
+        for after in (os.fstat(source.fileno()), path.stat()):
+            if (before.st_size, before.st_mtime_ns, before.st_ino, before.st_dev) != (
+                after.st_size, after.st_mtime_ns, after.st_ino, after.st_dev
+            ):
+                raise TakeSelectionError("Media source changed during fingerprinting.")
     return digest.hexdigest()
 
 

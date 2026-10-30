@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -128,6 +130,45 @@ def test_binding_resolve_rejects_source_changed_after_binding(tmp_path: Path) ->
 
     with pytest.raises(TakeSequenceBindingError, match="changed"):
         workflow.resolve_sources(binding["binding_id"])
+
+
+def test_binding_rejects_same_size_middle_change_with_unchanged_mtime(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "take.mkv"
+    source.write_bytes(b"a" * (4 * 1_048_576))
+    sequence = _sequence(source)
+    workflow = TakeSequenceBindingWorkflow(
+        StubSequenceReader(sequence), MediaPolicy([tmp_path]), tmp_path / "bindings"
+    )
+    binding = workflow.bind(
+        sequence_id=sequence["sequence_id"],
+        sources=[{"order": 1, "path": str(source)}],
+    )
+    original = source.stat()
+    with source.open("r+b") as stream:
+        stream.seek(2 * 1_048_576)
+        stream.write(b"b")
+    os.utime(source, ns=(original.st_atime_ns, original.st_mtime_ns))
+    assert source.stat().st_size == original.st_size
+    with pytest.raises(TakeSequenceBindingError, match="changed"):
+        workflow.resolve_sources(binding["binding_id"])
+
+
+def test_legacy_edge_hash_approval_requires_new_analysis(tmp_path: Path) -> None:
+    source = tmp_path / "take.mkv"
+    source.write_bytes(b"approved source")
+    sequence = _sequence(source)
+    legacy = hashlib.sha256(str(source.stat().st_size).encode() + source.read_bytes())
+    sequence["entries"][0]["fingerprint"] = legacy.hexdigest()
+    workflow = TakeSequenceBindingWorkflow(
+        StubSequenceReader(sequence), MediaPolicy([tmp_path]), tmp_path / "bindings"
+    )
+    with pytest.raises(TakeSequenceBindingError, match="does not match"):
+        workflow.bind(
+            sequence_id=sequence["sequence_id"],
+            sources=[{"order": 1, "path": str(source)}],
+        )
 
 
 def _sequence(source: Path) -> dict[str, Any]:

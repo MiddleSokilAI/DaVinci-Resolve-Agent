@@ -25,6 +25,7 @@ from mcp.types import (
     ToolAnnotations,
 )
 
+from agent.capabilities import workflow_capabilities
 from mcp_server.free_marker import create_server as create_marker_server
 from providers.resolve.lua_editing import atomic_json, bounded_text
 from providers.resolve.managed_status import managed_status
@@ -159,8 +160,11 @@ class ManagedMarkerServer(MCPServer[Any]):
         super().__init__(
             name="davinci-resolve-agent-free-marker",
             instructions=(
-                "Managed Resolve Free marker connection. A separate opt-in Windows "
-                "watcher starts the fixed menu bridge after a saved project opens. "
+                "Managed Resolve Free marker connection. "
+                "Call video_agent_capabilities before choosing a workflow; "
+                "catalogue presence does not establish native availability. "
+                "A separate opt-in Windows watcher starts the fixed menu bridge "
+                "after a saved project opens. "
                 "Use resolve_free_autostart_status to inspect waiting/error states. "
                 "Every tool stays pinned to one native session for its full operation. "
                 "Verify fresh native project identity before writes. Preserve stable "
@@ -297,11 +301,38 @@ class ManagedMarkerServer(MCPServer[Any]):
             with operation_lock(self.profile):
                 active = read_active(self.profile)
                 if not active:
+                    if name == "video_agent_capabilities":
+                        report = workflow_capabilities(
+                            backend="free_marker",
+                            tools=list(definitions),
+                            connected=False,
+                            evidence="managed_session_unavailable",
+                            mutation_blocker="bootstrap_waiting",
+                        )
+                        return CallToolResult(
+                            content=[TextContent(type="text", text=json.dumps(report))],
+                            structured_content=report,
+                        )
                     return _error("BOOTSTRAP_WAITING", "Watcher has no active session.")
                 root = Path(active["runtime"])
                 local_diagnostics = name in {
-                    "resolve_free_startup_status", "resolve_free_pending_requests"
+                    "resolve_free_startup_status", "resolve_free_pending_requests",
+                    "video_agent_capabilities",
                 }
+                if (name == "video_agent_capabilities"
+                        and active["phase"] != "connected"):
+                    report = workflow_capabilities(
+                        backend="free_marker",
+                        tools=list(definitions),
+                        connected=False,
+                        evidence="managed_bootstrap_waiting",
+                        session=active["session"],
+                        mutation_blocker="bootstrap_waiting",
+                    )
+                    return CallToolResult(
+                        content=[TextContent(type="text", text=json.dumps(report))],
+                        structured_content=report,
+                    )
                 if active["phase"] != "connected" and not local_diagnostics:
                     return _error(
                         "BOOTSTRAP_WAITING",
@@ -324,9 +355,31 @@ class ManagedMarkerServer(MCPServer[Any]):
                     claim_write_key(self.profile, active, key)
                 backend = self._backend(root)
                 with MarkerLeaseKeeper(root):
-                    return await _complete_work(
+                    backend_result = await _complete_work(
                         backend.call_tool(name, arguments, context)
                     )
+                    if (name == "video_agent_capabilities"
+                            and isinstance(backend_result, CallToolResult)
+                            and backend_result.structured_content is not None):
+                        report = backend_result.structured_content
+                        report["registered_tools"] = sorted(definitions)
+                        if pending_project_open(self.profile)["pending"]:
+                            report["mutation_blocker"] = (
+                                "project_open_verification_pending"
+                            )
+                            for workflow in report["workflows"]:
+                                if workflow["requires_confirmation"] and workflow[
+                                    "supported"
+                                ]:
+                                    workflow.update(
+                                        available=False, status="blocked",
+                                        reason="project_open_verification_pending",
+                                    )
+                        # Keep human-readable and structured results identical.
+                        backend_result.content = [TextContent(
+                            type="text", text=json.dumps(report)
+                        )]
+                    return backend_result
         except OriginalGenerationRequired as error:
             return _error("ORIGINAL_GENERATION_REQUIRED", str(error))
         except ProjectOpenError as error:

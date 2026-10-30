@@ -148,7 +148,7 @@ def test_stdio_discovery_and_startup_are_local_only(
         ):
             await session.initialize()
             tools = {tool.name: tool for tool in (await session.list_tools()).tools}
-            assert len(tools) == 51
+            assert len(tools) == 52
             startup = tools["resolve_free_startup_status"]
             assert startup.annotations is not None
             assert startup.annotations.read_only_hint is True

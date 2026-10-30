@@ -1535,6 +1535,7 @@ def test_mcp_exposes_fixed_m5_tool_surface() -> None:
     results, names = asyncio.run(exercise_server())
 
     assert names == {
+        "video_agent_capabilities",
         "video_agent_status",
         "resolve_get_project",
         "resolve_stop_bridge",

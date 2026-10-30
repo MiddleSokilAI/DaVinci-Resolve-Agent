@@ -16,6 +16,7 @@ from mcp.types import CallToolResult, ToolAnnotations
 
 import mcp_server.managed_marker as module
 from mcp_server.managed_marker import ManagedMarkerServer
+from providers.resolve.lua_transport import LuaSnapshotClient
 from providers.resolve.marker_supervisor import OperationBusy, Profile, operation_lock
 from providers.resolve.marker_transport import prepare_marker
 from providers.resolve.project_open_service import ProjectOpenError, ProjectOpenService
@@ -71,8 +72,17 @@ def test_catalogue_available_without_native_or_active(
 
     async def scenario() -> None:
         tools = await server.list_tools()
-        assert len(tools) == 53
+        assert len(tools) == 54
         assert "resolve_free_open_project" in {tool.name for tool in tools}
+        capabilities = await call_result(server, "video_agent_capabilities", {
+            "verify_connection": True
+        })
+        assert not capabilities.is_error
+        assert capabilities.structured_content is not None
+        assert capabilities.structured_content["connected"] is False
+        assert not any(
+            row["available"] for row in capabilities.structured_content["workflows"]
+        )
         status = await call_result(server, "resolve_free_autostart_status", {})
         assert status.structured_content is not None
         assert status.structured_content["native_connection_verified"] is False
@@ -225,8 +235,56 @@ def test_concurrent_catalogue_startup_is_serialized(tmp_path: Path) -> None:
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = [pool.submit(make), pool.submit(make)]
-        assert [future.result(20) for future in futures] == [53, 53]
+        assert [future.result(20) for future in futures] == [54, 54]
     assert (profile.state_directory / "catalogue-runtime/session.json").is_file()
+
+
+def test_capabilities_pin_active_session_and_respect_pending_project_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = profile_at(tmp_path)
+    first, second = active_at(profile, "first"), active_at(profile, "second")
+    selected = install_state(monkeypatch, profile, first, second)
+    requests: list[str] = []
+
+    def request(self: LuaSnapshotClient, action: str, timeout: float) -> dict[str, Any]:
+        requests.append(str(self.root))
+        return {"project": {"id": "native-id", "name": "Current"}}
+
+    monkeypatch.setattr(LuaSnapshotClient, "request", request)
+    server = ManagedMarkerServer(profile)
+
+    async def scenario() -> None:
+        report = await call_result(server, "video_agent_capabilities", {
+            "verify_connection": True
+        })
+        assert not report.is_error
+        assert report.structured_content is not None
+        assert report.structured_content["session"] == first["session"]
+        assert "resolve_free_open_project" in report.structured_content[
+            "registered_tools"
+        ]
+        assert requests == [first["runtime"]]
+        selected["active"] = second
+        monkeypatch.setattr(module, "pending_project_open", lambda profile: {
+            "pending": True
+        })
+        report = await call_result(server, "video_agent_capabilities", {
+            "verify_connection": True
+        })
+        assert report.structured_content is not None
+        assert report.structured_content["session"] == second["session"]
+        assert report.structured_content["mutation_blocker"] == (
+            "project_open_verification_pending"
+        )
+        for workflow in report.structured_content["workflows"]:
+            if workflow["requires_confirmation"]:
+                assert workflow["available"] is False
+        assert requests == [first["runtime"], second["runtime"]]
+        assert report.content[0].type == "text"
+        assert json.loads(report.content[0].text) == report.structured_content
+
+    asyncio.run(scenario())
 
 
 def open_arguments() -> dict[str, Any]:

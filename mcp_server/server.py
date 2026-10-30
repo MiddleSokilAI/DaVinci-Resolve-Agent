@@ -12,6 +12,8 @@ from mcp.types import ToolAnnotations
 
 from agent import __version__
 from agent.application import AgentApplication
+from agent.capabilities import workflow_capabilities
+from agent.media import MediaPolicy
 from agent.rendering import DEFAULT_RENDER_PROFILE
 from agent.workflow_audit import WorkflowAuditLog
 
@@ -47,11 +49,55 @@ def create_server(application: AgentApplication | None = None) -> MCPServer:
         version=__version__,
     instructions=(
             "Local access to DaVinci Resolve Agent. "
+            "Call video_agent_capabilities before choosing a workflow; cached "
+            "heartbeat and registered tools do not prove native availability. "
             "The Resolve tools require the one-shot ResolveBridge script to be "
             "launched inside DaVinci Resolve while the request is waiting. "
             "Rough-cut and audio workflows run locally without changing Resolve."
         ),
     )
+
+    @server.tool(annotations=READ_ONLY_TOOL)
+    async def video_agent_capabilities(
+        verify_connection: bool = False,
+        timeout_seconds: float = 30,
+    ) -> dict[str, Any]:
+        """Map workflows to this Python backend; optionally verify native liveness.
+
+        The default reads cached state only. It never treats another backend's
+        live connection as support for Python workflow receipts or write APIs.
+        """
+        connected: bool | None = None
+        project = None
+        evidence = "cached_python_state"
+        if verify_connection:
+            try:
+                project = await asyncio.to_thread(
+                    service.resolve_get_project, timeout_seconds
+                )
+                connected = bool(project)
+                evidence = "fresh_native_request"
+            except (OSError, RuntimeError, ValueError):
+                connected = False
+                evidence = "native_request_failed"
+        try:
+            state = (await asyncio.to_thread(service.status))["bridge"]
+        except (OSError, RuntimeError, ValueError):
+            state = {}
+        try:
+            await asyncio.to_thread(MediaPolicy.from_local_config)
+            media_configured = True
+        except (OSError, RuntimeError, ValueError):
+            media_configured = False
+        return workflow_capabilities(
+            backend="python",
+            tools=[tool.name for tool in await server.list_tools()],
+            connected=connected,
+            evidence=evidence,
+            project=project,
+            native_capabilities=state.get("capabilities", {}),
+            media_roots_configured=media_configured,
+        )
 
     @server.tool(annotations=READ_ONLY_TOOL)
     async def video_agent_status(

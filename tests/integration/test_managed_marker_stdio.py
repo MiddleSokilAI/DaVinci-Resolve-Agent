@@ -32,9 +32,19 @@ def test_managed_stdio_catalogue_and_waiting_status(tmp_path: Path) -> None:
         ):
             await client.initialize()
             tools = await client.list_tools()
-            assert len(tools.tools) == 53
+            assert len(tools.tools) == 54
             assert "resolve_free_open_project" in {t.name for t in tools.tools}
             assert "resolve_free_autostart_status" in {t.name for t in tools.tools}
+            capabilities = await client.call_tool("video_agent_capabilities", {
+                "verify_connection": True
+            })
+            assert not capabilities.is_error
+            assert capabilities.structured_content is not None
+            assert capabilities.structured_content["connected"] is False
+            assert not any(
+                row["available"]
+                for row in capabilities.structured_content["workflows"]
+            )
             result = await client.call_tool("resolve_free_autostart_status", {})
             assert not result.is_error
             assert result.structured_content is not None

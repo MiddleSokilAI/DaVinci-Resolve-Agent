@@ -13,6 +13,7 @@ ContractName = Literal[
     "command",
     "response",
     "capability",
+    "workflow-capabilities",
     "rough-cut-plan",
     "rough-cut-approval",
     "rough-cut-apply-result",

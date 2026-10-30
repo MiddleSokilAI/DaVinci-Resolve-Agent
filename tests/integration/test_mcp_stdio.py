@@ -29,6 +29,7 @@ def test_installed_mcp_server_supports_stdio_handshake() -> None:
             return {tool.name for tool in result.tools}
 
     assert asyncio.run(list_tool_names()) == {
+        "video_agent_capabilities",
         "video_agent_status",
         "resolve_stop_bridge",
         "resolve_get_project",
