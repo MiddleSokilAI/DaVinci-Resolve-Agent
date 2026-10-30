@@ -11,7 +11,12 @@ from pathlib import Path
 from typing import Any
 
 from providers.resolve.managed_status import managed_status
-from providers.resolve.marker_supervisor import Profile, Supervisor
+from providers.resolve.marker_supervisor import (
+    OperationBusy,
+    Profile,
+    Supervisor,
+    _lock,
+)
 from providers.resolve.project_open_service import ProjectOpenError, ProjectOpenService
 
 
@@ -73,6 +78,26 @@ def start_hidden(profile: Profile) -> dict[str, Any]:
             "native_connection_verified": False}
 
 
+def run_automatic_watch(profile: Profile) -> None:
+    """One owner starts both workers, even when two MCP endpoints connect at once."""
+    import threading
+
+    from providers.resolve.sdk_worker import SDKWorker
+
+    try:
+        with _lock(profile, "automatic-watcher.lock"):
+            stop = threading.Event()
+            worker = threading.Thread(target=SDKWorker(profile).run, args=(stop,))
+            worker.start()
+            try:
+                Supervisor(profile).run(stop)
+            finally:
+                stop.set()
+                worker.join()
+    except OperationBusy:
+        return
+
+
 def main() -> None:
     """Configure the owned startup entry or run the bounded-operation watcher."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -125,7 +150,7 @@ def main() -> None:
     elif args.once:
         print(json.dumps(Supervisor(profile).tick(), ensure_ascii=False))
     else:
-        Supervisor(profile).run()
+        run_automatic_watch(profile)
 
 
 if __name__ == "__main__":

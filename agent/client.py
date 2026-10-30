@@ -34,7 +34,7 @@ class CommandTimeoutError(AgentClientError):
         self.timeout_seconds = timeout_seconds
         super().__init__(
             f"Command {command_id} timed out after {timeout_seconds:g}s. "
-            "Run ResolveBridge inside Resolve and retry."
+            "Connection recovery is automatic; preserve the original write key."
         )
 
 

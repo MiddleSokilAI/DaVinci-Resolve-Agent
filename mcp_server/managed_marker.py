@@ -11,7 +11,8 @@ import asyncio
 import hashlib
 import json
 import time
-from collections.abc import Callable, Coroutine
+from collections.abc import AsyncIterator, Callable, Coroutine
+from contextlib import ExitStack, asynccontextmanager
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -45,6 +46,21 @@ from providers.resolve.project_open_service import (
 )
 
 _Result = TypeVar("_Result")
+
+
+@asynccontextmanager
+async def _wait_operation(profile: Profile, timeout: float) -> AsyncIterator[None]:
+    deadline = time.monotonic() + timeout
+    with ExitStack() as stack:
+        while True:
+            try:
+                stack.enter_context(operation_lock(profile))
+                break
+            except OperationBusy:
+                if time.monotonic() >= deadline:
+                    raise
+                await asyncio.sleep(0.05)
+        yield
 
 
 async def _complete_work(work: Coroutine[Any, Any, _Result]) -> _Result:
@@ -298,7 +314,9 @@ class ManagedMarkerServer(MCPServer[Any]):
                 return _error("INVALID_INPUT", str(error))
         # The nonblocking file gate serializes other chats and the supervisor.
         try:
-            with operation_lock(self.profile):
+            async with _wait_operation(
+                self.profile, self.profile.native_timeout_seconds
+            ):
                 active = read_active(self.profile)
                 if not active:
                     if name == "video_agent_capabilities":

@@ -477,8 +477,19 @@ class Supervisor:
 
     def _audit_rotation(self) -> list[Path]:
         """Refuse migration around any earlier uncertain operation evidence."""
+        for path in (self.profile.state_directory / "sdk-write-owners").glob("*.json"):
+            if path.is_symlink() or path.stat().st_size > 4 * 1024 * 1024:
+                raise SupervisorError("INVALID_SDK_WRITE_RECORD")
+            value = json.loads(
+                path.read_text(encoding="utf-8"), object_pairs_hook=_object
+            )
+            if not isinstance(value, dict) or value.get("phase") != "completed":
+                raise SupervisorError("PREVIOUS_SDK_WRITE_REQUIRES_RECOVERY")
         roots = runtime_history(self.profile)
         for root in roots:
+            sdk_inbox = root / "sdk-rpc/inbox"
+            if sdk_inbox.exists() or sdk_inbox.is_symlink():
+                raise SupervisorError("PREVIOUS_SDK_REQUEST_REQUIRES_RECOVERY")
             _validate_runtime_policy(self.profile, _json(root / "session.json"))
             evidence = inspect_startup(root)
             recovery = evidence["recovery"]
@@ -535,6 +546,7 @@ class Supervisor:
                 root,
                 list(self.profile.media_roots),
                 lease_seconds=self.profile.lease_seconds,
+                sdk_runtime_root=self.profile.runtime_base,
             )
         metadata = _json(root / "session.json")
         active: dict[str, Any] = {

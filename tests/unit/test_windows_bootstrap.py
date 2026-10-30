@@ -721,6 +721,7 @@ def test_synthetic_ui_dispatch_uses_fixed_path_once_and_marks_boundary(
         $script:Main|Add-Member ScriptMethod SetFocus {};
         function Assert-BootstrapContext { return $script:Main }
         function Assert-BootstrapForeground {}
+        function Activate-BootstrapWindow {}
         function Get-BootstrapScriptHash { $script:HashChecks++; return ('a'*64) }
         function Get-BootstrapWindowState { param($main) return $script:State }
         function Start-Sleep { param($Milliseconds) }
@@ -778,3 +779,34 @@ def test_synthetic_ui_dispatch_uses_fixed_path_once_and_marks_boundary(
     assert result["failed"] is (mode in {"invoke-throws", "no-pattern"})
     assert result["restored"] is (mode == "minimized")
     assert result["hash_checks"] == (1 if mode == "no-pattern" else 2)
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_activation_rechecks_context_before_accepting_foreground(changed: bool) -> None:
+    result = _offline_powershell(
+        r"""
+        $changed=ConvertFrom-Json ([Console]::In.ReadToEnd());
+        Add-Type 'using System; public static class BootstrapNative {
+            public static int Calls;
+            public static void ActivateWindow(IntPtr handle,uint pid) { Calls++; }
+        }';
+        $script:ExpectedProcess=@{window_handle=456;pid=123};
+        $script:Contexts=0;$script:ForegroundChecks=0;
+        function Assert-BootstrapContext {
+            $script:Contexts++;
+            if($changed -and $script:Contexts -eq 2){throw 'BSUI_PROCESS_CHANGED'}
+        }
+        function Assert-BootstrapForeground {$script:ForegroundChecks++}
+        function Start-Sleep {param($Milliseconds)}
+        $failed=$false;
+        try {Activate-BootstrapWindow} catch {$failed=$true}
+        @{failed=$failed;contexts=$script:Contexts;
+          foreground=$script:ForegroundChecks;calls=[BootstrapNative]::Calls}|
+          ConvertTo-Json -Compress
+        """,
+        changed,
+    )
+    assert result == {
+        "failed": changed, "contexts": 2,
+        "foreground": 0 if changed else 1, "calls": 1,
+    }

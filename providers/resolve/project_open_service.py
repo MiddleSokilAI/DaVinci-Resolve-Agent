@@ -13,7 +13,8 @@ import math
 import ntpath
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -243,6 +244,26 @@ class ProjectOpenService:
         self.supervisor_factory = supervisor_factory
         self.client_factory = client_factory
         self.clock, self.sleep = clock, sleep
+
+    @contextmanager
+    def _operation_until(self, deadline: float) -> Iterator[None]:
+        """Wait for coordinator ownership without repeating an Open dispatch.
+
+        The watcher inspects Resolve periodically. Contention between inspection
+        and dispatch is expected and must not become a request for manual work.
+        Only acquisition retries; exceptions raised by the body are never retried.
+        """
+        with ExitStack() as stack:
+            while True:
+                try:
+                    stack.enter_context(operation_lock(self.profile))
+                    break
+                except OperationBusy:
+                    remaining = deadline - self.clock()
+                    if remaining <= 0:
+                        raise ProjectOpenError("HOST_OPERATION_BUSY") from None
+                    self.sleep(min(0.1, remaining))
+            yield
 
     def _native_clear(self, key_hash: str) -> None:
         owner = self.profile.state_directory / "write-owners" / f"{key_hash}.json"
@@ -525,7 +546,7 @@ class ProjectOpenService:
             _unlinked(folder)
             folder.mkdir(exist_ok=True)
             path = folder / f"{digest}.json"
-            with operation_lock(self.profile):
+            with self._operation_until(deadline):
                 records = dict(_receipts(self.profile))
                 receipt = records.get(path)
                 if receipt is not None:
@@ -573,7 +594,7 @@ class ProjectOpenService:
                 "process": token,
                 "native_binding": None,
             }
-            with operation_lock(self.profile):
+            with self._operation_until(deadline):
                 self._native_clear(digest)
                 active = read_active(self.profile)
                 if (

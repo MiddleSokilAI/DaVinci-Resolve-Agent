@@ -1,0 +1,145 @@
+"""The native SDK surface used by the canonical, allowlisted command bridge.
+
+This is an internal adapter contract, never an arbitrary-method MCP endpoint.
+Source evaluation, process launch, networking and project deletion are absent.
+"""
+
+SDK_METHODS = frozenset(
+    [
+        "AddMarker",
+        "AddRenderJob",
+        "AddTrack",
+        "AddVersion",
+        "AppendToTimeline",
+        "CreateEmptyTimeline",
+        "CreateProject",
+        "CreateSubtitlesFromAudio",
+        "DeleteClips",
+        "DeleteRenderJob",
+        "DuplicateTimeline",
+        "ExportProject",
+        "GetClipEnabled",
+        "GetClipList",
+        "GetClipProperty",
+        "GetCurrentPage",
+        "GetCurrentProject",
+        "GetCurrentRenderFormatAndCodec",
+        "GetCurrentTimecode",
+        "GetCurrentTimeline",
+        "GetCurrentVersion",
+        "GetDuration",
+        "GetEnd",
+        "GetEndFrame",
+        "GetFusionCompCount",
+        "GetIsTrackLocked",
+        "GetItemListInTrack",
+        "GetLUT",
+        "GetLinkedItems",
+        "GetMediaId",
+        "GetMediaPool",
+        "GetMediaPoolItem",
+        "GetName",
+        "GetNodeGraph",
+        "GetNodeLabel",
+        "GetNumNodes",
+        "GetProductName",
+        "GetProjectListInCurrentFolder",
+        "GetProjectManager",
+        "GetProperty",
+        "GetRenderCodecs",
+        "GetRenderFormats",
+        "GetRenderJobList",
+        "GetRenderJobStatus",
+        "GetRenderPresetList",
+        "GetRenderResolutions",
+        "GetRootFolder",
+        "GetSetting",
+        "GetSourceEndFrame",
+        "GetSourceStartFrame",
+        "GetStart",
+        "GetStartFrame",
+        "GetSubFolderList",
+        "GetTimelineByIndex",
+        "GetTimelineCount",
+        "GetTrackCount",
+        "GetTrackName",
+        "GetTrackTypeAndIndex",
+        "GetUniqueId",
+        "GetVersion",
+        "GetVersionNameList",
+        "GetVersionString",
+        "ImportMedia",
+        "InsertFusionTitleIntoTimeline",
+        "InsertTitleIntoTimeline",
+        "IsRenderingInProgress",
+        "LoadRenderPreset",
+        "LoadVersionByName",
+        "OpenPage",
+        "SaveProject",
+        "SetCDL",
+        "SetClipEnabled",
+        "SetClipsLinked",
+        "SetCurrentRenderFormatAndCodec",
+        "SetCurrentRenderMode",
+        "SetCurrentTimecode",
+        "SetCurrentTimeline",
+        "SetProperty",
+        "SetRenderSettings",
+        "StartRendering",
+    ]
+)
+
+SDK_CONSTANTS = frozenset(
+    [
+        "AUTO_CAPTION_AUTO",
+        "AUTO_CAPTION_LINE_SINGLE",
+        "AUTO_CAPTION_SUBTITLE_DEFAULT",
+        "SUBTITLE_CAPTION_PRESET",
+        "SUBTITLE_CHARS_PER_LINE",
+        "SUBTITLE_GAP",
+        "SUBTITLE_LANGUAGE",
+        "SUBTITLE_LINE_BREAK",
+    ]
+)
+
+SDK_MUTATIONS = frozenset(
+    name
+    for name in SDK_METHODS
+    if not name.startswith(("Get", "Is", "Export")) and name != "OpenPage"
+)
+SDK_INVALIDATES = SDK_MUTATIONS | {"OpenPage"}
+
+SDK_WRITE_METHODS: dict[str, tuple[str, ...]] = {
+    "create_project": ("CreateProject", "SetProperty"),
+    "import_media": ("ImportMedia",),
+    "create_timeline": ("CreateEmptyTimeline",),
+    "ensure_timeline_tracks": ("AddTrack",),
+    "duplicate_timeline": ("DuplicateTimeline",),
+    "set_current_timeline": (),
+    "append_clip": ("AppendToTimeline",),
+    "insert_title": ("InsertTitleIntoTimeline",),
+    "insert_animation_template": ("InsertFusionTitleIntoTimeline",),
+    "append_subtitle_file": ("ImportMedia", "AppendToTimeline"),
+    "insert_clip": ("AppendToTimeline",),
+    "insert_clips": ("AppendToTimeline",),
+    "set_clip_enabled": ("SetClipEnabled",),
+    "set_clips_linked": ("SetClipsLinked",),
+    "set_clip_link_groups": ("SetClipsLinked",),
+    "set_clip_transform": ("SetProperty",),
+    "set_clip_transforms": ("SetProperty",),
+    "delete_clip": ("DeleteClips",),
+    "add_marker": ("AddMarker",),
+    "create_subtitles_from_audio": ("CreateSubtitlesFromAudio",),
+    "prepare_render_job": (
+        "LoadRenderPreset",
+        "SetRenderSettings",
+        "SetCurrentRenderFormatAndCodec",
+        "SetCurrentRenderMode",
+        "AddRenderJob",
+        "DeleteRenderJob",
+    ),
+    "start_render_job": ("StartRendering",),
+    "apply_color_preset": ("AddVersion", "LoadVersionByName", "SetCDL"),
+}
+
+SDK_COMMON_WRITE_METHODS = ("SaveProject", "SetCurrentTimeline", "SetCurrentTimecode")

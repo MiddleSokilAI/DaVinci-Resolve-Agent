@@ -53,6 +53,19 @@ def test_startup_registration_runs_only_fixed_installed_driver(
     assert len(calls) == 1
 
 
+def test_duplicate_watcher_does_not_start_an_orphan_sdk_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from providers.resolve.marker_supervisor import _lock
+    from providers.resolve.sdk_worker import SDKWorker
+
+    profile = make_profile(tmp_path)
+    monkeypatch.setattr(SDKWorker, "run", lambda *args: pytest.fail("duplicate worker"))
+    with _lock(profile, "automatic-watcher.lock"):
+        module.run_automatic_watch(profile)
+
+
 def test_hidden_start_has_no_shell_or_terminal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
