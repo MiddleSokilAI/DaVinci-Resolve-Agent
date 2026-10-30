@@ -49,6 +49,8 @@ interpreted. Files remain local to the owned runtime.
 ## Write and recovery guarantees
 
 - One coordinator lock covers each complete native operation.
+- Queued commands run in arrival order. Background discovery waits until recent
+  client work is idle and any project-open verification has completed.
 - A durable key belongs to its original request, transport and native generation.
   SDK ownership uses a versioned record rejected by older marker clients too;
   switching tool families cannot bypass the original receipt, even in one session.

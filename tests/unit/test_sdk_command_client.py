@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -209,6 +211,81 @@ def test_sdk_reservation_without_dispatch_can_resume_same_key(
     claim_write_key(worker.profile, active, "key", route="sdk")
     worker.process(queued(worker, "create_timeline", {"name": "One"}, "key"))
     assert native.project_manager.export_count == 1
+
+
+def test_recent_client_work_prevents_an_immediate_background_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import providers.resolve.sdk_worker as module
+
+    worker, _, active = setup_worker(tmp_path, monkeypatch)
+    active["process"] = {}
+    (Path(active["runtime"]) / "sdk-template.preset").touch()
+    monkeypatch.setattr(module, "process_alive", lambda process: True)
+    queued(worker, "get_current_project", {}, "read")
+    stop = threading.Event()
+    waits = 0
+
+    def wait(timeout: float) -> bool:
+        nonlocal waits
+        waits += 1
+        if waits == 2:
+            stop.set()
+        return stop.is_set()
+
+    monkeypatch.setattr(stop, "wait", wait)
+    worker.run(stop)
+    assert waits == 2
+    assert not list(worker.directories["commands"].glob("*.json"))
+
+
+@pytest.mark.parametrize("invalid", [False, True])
+def test_background_read_does_not_compete_with_pending_project_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid: bool,
+) -> None:
+    import providers.resolve.sdk_worker as module
+
+    worker, _, active = setup_worker(tmp_path, monkeypatch)
+    active["process"] = {}
+    (Path(active["runtime"]) / "sdk-template.preset").touch()
+    monkeypatch.setattr(module, "process_alive", lambda process: True)
+
+    def pending(profile: Profile) -> dict[str, Any]:
+        if invalid:
+            raise ValueError("unreadable host receipt")
+        return {"pending": True}
+
+    monkeypatch.setattr(module, "pending_project_open", pending)
+    stop = threading.Event()
+    monkeypatch.setattr(stop, "wait", lambda seconds: stop.set())
+    worker.run(stop)
+    assert not list(worker.directories["commands"].glob("*.json"))
+
+
+def test_queued_commands_are_processed_in_arrival_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker, _, _ = setup_worker(tmp_path, monkeypatch)
+    first = queued(worker, "get_current_project", {}, "first")
+    second = queued(worker, "get_capabilities", {}, "second")
+    first = first.rename(first.with_name("ffffffff-ffff-4fff-8fff-ffffffffffff.json"))
+    second = second.rename(
+        second.with_name("00000000-0000-4000-8000-000000000000.json")
+    )
+    os.utime(first, ns=(1000000000, 1000000000))
+    os.utime(second, ns=(2000000000, 2000000000))
+    seen: list[Path] = []
+    stop = threading.Event()
+
+    def process(path: Path) -> None:
+        seen.append(path)
+        path.unlink()
+        if len(seen) == 2:
+            stop.set()
+
+    monkeypatch.setattr(worker, "process", process)
+    worker.run(stop)
+    assert seen == [first, second]
 
 
 def test_sdk_key_cannot_be_reused_by_legacy_marker(

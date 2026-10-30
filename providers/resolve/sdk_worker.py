@@ -29,6 +29,7 @@ from providers.resolve.marker_supervisor import (
     read_active,
 )
 from providers.resolve.marker_transport import MarkerLeaseKeeper, MarkerSlot
+from providers.resolve.project_open_service import pending_project_open
 from providers.resolve.sdk_command_client import SDKCommandClient
 from providers.resolve.windows_bootstrap import _official_executable
 
@@ -64,6 +65,12 @@ class SDKWorker:
         )
         script = Path(bridge.__file__).with_name("ResolveSDKCommand.py")
         return executable, script
+
+    def _refresh_allowed(self) -> bool:
+        try:
+            return not pending_project_open(self.profile)["pending"]
+        except (OSError, RuntimeError, ValueError):
+            return False
 
     def _external_available(self, active: dict[str, Any]) -> bool:
         process = active["process"]
@@ -196,7 +203,6 @@ class SDKWorker:
             route_path: Path | None = None
             if write:
                 from mcp_server.managed_marker import claim_write_key
-                from providers.resolve.project_open_service import pending_project_open
 
                 if pending_project_open(self.profile)["pending"]:
                     raise RuntimeError("PROJECT_OPEN_VERIFICATION_PENDING")
@@ -332,7 +338,10 @@ class SDKWorker:
         try:
             with _lock(self.profile, "sdk-worker.lock"):
                 while not stop.is_set():
-                    paths = sorted(self.directories["commands"].glob("*.json"))
+                    paths = sorted(
+                        self.directories["commands"].glob("*.json"),
+                        key=lambda path: (path.stat().st_mtime_ns, path.name),
+                    )
                     if not paths:
                         active = read_active(self.profile)
                         if (
@@ -346,6 +355,7 @@ class SDKWorker:
                                 Path(active["runtime"]) / "sdk-template.preset"
                             ).is_file()
                             and time.monotonic() - last_refresh > 20
+                            and self._refresh_allowed()
                         ):
                             # Publish native state before high-level workflows
                             # consult capabilities; no UI or Resolve launch here.
@@ -391,6 +401,10 @@ class SDKWorker:
                                 getattr(error, "code", "AUTOMATIC_PROVIDER_FAILED"),
                                 str(error),
                             )
+                    # User/readiness work just refreshed the native state too.
+                    # Do not insert a slow discovery read ahead of the caller's
+                    # next command or starve project-open context verification.
+                    last_refresh = time.monotonic()
                     stop.wait(0.05)
         except OperationBusy:
             return
