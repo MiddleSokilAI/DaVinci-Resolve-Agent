@@ -2115,6 +2115,82 @@ def test_import_outside_bridge_policy_is_rejected_before_backup(
     assert not list((tmp_path / "backups").glob("*.drp"))
 
 
+@pytest.mark.parametrize("obstacle", [False, True])
+def test_render_to_selected_parent_is_owned_replay_safe_and_no_overwrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, obstacle: bool,
+) -> None:
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "profile"))
+    destination = tmp_path / "Videos"
+    destination.mkdir()
+    existing = destination / "existing.mp4"
+    existing.write_bytes(b"preserve")
+    directories = ensure_runtime_directories(tmp_path)
+    (directories["state"] / "media-policy.json").write_text(
+        json.dumps({"policy_version": "1.0", "allowed_roots": [str(destination)]}),
+        encoding="utf-8",
+    )
+    resolve = FakeResolve()
+    timeline = resolve.project.media_pool.CreateEmptyTimeline("Export")
+    resolve.project.SetCurrentTimeline(timeline)
+    state = collect_bridge_state(resolve)
+    args = {"custom_name": "Selected", "output_directory": str(destination)}
+    first = _run_command(tmp_path, resolve, state, _command(
+        "selected-render", "prepare_render_job", args, idempotency_key="selected",
+    ))
+    assert first["status"] == "success", first
+    replay = _run_command(tmp_path, resolve, state, _command(
+        "selected-replay", "prepare_render_job", args, idempotency_key="selected",
+    ))
+    assert replay["result"] == first["result"]
+    assert len(resolve.project.render_jobs) == 1
+    other = destination / "another-export-parent"
+    other.mkdir()
+    conflicting = _run_command(tmp_path, resolve, state, _command(
+        "selected-conflict", "prepare_render_job",
+        dict(args, output_directory=str(other)), idempotency_key="selected",
+    ))
+    assert conflicting["status"] == "error"
+    assert resolve.project_manager.export_count == 1
+    target = Path(first["result"]["target_directory"])
+    assert target.parent == destination
+    assert target.name.startswith("render-") and target.is_dir()
+    assert resolve.project.render_jobs[0]["TargetDir"] == str(target)
+    if obstacle:
+        (target / "Selected.mp4").write_bytes(b"do not overwrite")
+    started = _run_command(tmp_path, resolve, state, _command(
+        "selected-start", "start_render_job", {"job_id": first["result"]["job_id"]},
+    ))
+    if obstacle:
+        assert started["status"] == "error"
+        assert started["error"]["code"] == "RENDER_OUTPUT_EXISTS"
+        assert resolve.project_manager.export_count == 1
+        assert (target / "Selected.mp4").read_bytes() == b"do not overwrite"
+    else:
+        assert started["status"] == "success", started
+        assert started["result"]["started"] is True
+    assert existing.read_bytes() == b"preserve"
+
+
+def test_selected_render_rejects_outside_parent_before_backup(tmp_path: Path) -> None:
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    directories = ensure_runtime_directories(tmp_path)
+    (directories["state"] / "media-policy.json").write_text(
+        json.dumps({"policy_version": "1.0", "allowed_roots": [str(allowed)]}),
+        encoding="utf-8",
+    )
+    resolve = FakeResolve()
+    state = collect_bridge_state(resolve)
+    blocked = _run_command(tmp_path, resolve, state, _command(
+        "outside-render", "prepare_render_job",
+        {"custom_name": "Blocked", "output_directory": str(tmp_path)},
+    ))
+    assert blocked["status"] == "error"
+    assert blocked["error"]["code"] == "RENDER_OUTPUT_DIRECTORY_INVALID"
+    assert resolve.project_manager.export_count == 0
+    assert resolve.project.render_jobs == []
+
+
 def test_prepare_render_job_is_backed_up_and_replay_safe(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

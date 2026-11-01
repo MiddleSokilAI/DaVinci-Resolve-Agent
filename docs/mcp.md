@@ -340,22 +340,41 @@ Media Pool і render discovery. Tool не приймає масив команд
 queue. Він не конфігурує й не запускає render.
 
 `resolve_prepare_render_job` приймає лише безпечний filename stem у
-`custom_name` та необов'язковий `profile`. Він створює `.drp` backup,
+`custom_name`, необов'язкові `profile` та `output_directory`. Він створює `.drp` backup,
 застосовує фіксований `youtube-1080p-h264-v1` або
 `youtube-2160p-h264-v1`, додає MP4/H264 job у queue та повертає
-`started=false`. Default — 1080p. Output directory, raw dimensions, codec і
-Resolve preset не задаються через MCP.
+`started=false`. Default — 1080p. `output_directory` — наявна абсолютна папка
+в межах `media.allowed_roots`, наприклад `G:/Videos`. Для кожного рендера агент
+створює в ній окрему `render-<id>` папку; `target_directory` у відповіді містить
+фактичний шлях. За відсутності параметра залишається керована папка за замовчуванням.
+Raw dimensions, codec і Resolve preset не задаються через MCP.
 
 `resolve_get_render_job_status` читає документований status одного `job_id`.
 `resolve_start_render_job` стартує лише job, який був створений
-`resolve_prepare_render_job`, досі відповідає фіксованому 1080p MP4/H264
-контракту й не має попереднього start-record. Tool не приймає output path,
+`resolve_prepare_render_job`, досі відповідає фіксованому MP4/H264
+контракту вибраного профілю й не має попереднього start-record. Tool не змінює output path,
 codec, preset, список job або upload target. Перед стартом створюється backup.
 
 `resolve_verify_render_output` повторно читає status і зіставляє
-`TargetDir`/`OutputFilename` із керованою директорією. Успішна перевірка
+`TargetDir`/`OutputFilename` із керованою директорією. Для експорту у вибрану папку
+передай той самий `output_directory`, що й під час підготовки. Успішна перевірка
 вимагає `CompletionPercentage=100`, наявного MP4 і ненульового розміру.
 Інструмент не декодує контейнер і не перевіряє зображення, звук або тривалість.
+
+Наприклад, підготуй `resolve_prepare_render_job(custom_name="Final",
+output_directory="G:/Videos", idempotency_key="final-export-1")`, запусти
+отриманий `job_id` через `resolve_start_render_job`, а після завершення виклич
+`resolve_verify_render_output(job_id=..., output_directory="G:/Videos")`.
+Результат матиме шлях `G:/Videos/render-<id>/Final.mp4`. Повторне використання
+ключа з іншою директорією відхиляється; повтор початкового запиту повертає
+наявний job. Директорія перевіряється до підключення, а перед стартом — повторно;
+наявні файли в папці цього рендера блокують запуск.
+
+`resolve_lua_prepare_render` також приймає `output_directory` із коренів
+поточної керованої сесії. Його готовий файл — `G:/Videos/render-<id>/video.mp4`;
+перевіряй його через `resolve_lua_get_render_status`. Протокол автоматично
+вибирає агент. Високорівневі receipt-workflow без цього параметра зберігають
+свої стандартні папки експорту.
 
 `resolve_insert_clip` вставляє один bounded source range на вказаний
 `video|audio` track. `position_frames` є offset від початку timeline, а не

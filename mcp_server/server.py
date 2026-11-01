@@ -558,8 +558,14 @@ def create_server(application: AgentApplication | None = None) -> MCPServer:
         profile: str = DEFAULT_RENDER_PROFILE,
         timeout_seconds: float = 30,
         idempotency_key: str | None = None,
+        output_directory: str | None = None,
     ) -> dict[str, Any]:
-        """Add a fixed MP4/H264 job after backup without starting render."""
+        """Prepare MP4/H264 without starting; optionally choose an export parent.
+
+        output_directory must exist inside allowed media roots, e.g. G:/Videos.
+        A unique render subfolder prevents overwriting files. Omit for the
+        default managed render location. Return value includes target_directory.
+        """
         return await asyncio.to_thread(
             service.resolve_prepare_render_job,
             custom_name,
@@ -567,6 +573,7 @@ def create_server(application: AgentApplication | None = None) -> MCPServer:
             profile=profile,
             timeout_seconds=timeout_seconds,
             idempotency_key=idempotency_key,
+            output_directory=output_directory,
         )
 
     @server.tool(annotations=READ_ONLY_TOOL)
@@ -599,12 +606,14 @@ def create_server(application: AgentApplication | None = None) -> MCPServer:
     async def resolve_verify_render_output(
         job_id: str,
         timeout_seconds: float = 30,
+        output_directory: str | None = None,
     ) -> dict[str, Any]:
-        """Verify one completed render as a managed non-empty MP4 file."""
+        """Verify a completed MP4; pass the same export parent used to prepare it."""
         return await asyncio.to_thread(
             service.resolve_verify_render_output,
             job_id,
             timeout_seconds=timeout_seconds,
+            output_directory=output_directory,
         )
 
     @server.tool(annotations=WRITE_TOOL)

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Protocol, TypeVar
 
 from agent.animation_workflow import AnimationTemplateWorkflow
@@ -396,6 +398,7 @@ class ResolveReader(Protocol):
         profile: str = DEFAULT_RENDER_PROFILE,
         timeout_seconds: float = 30,
         idempotency_key: str | None = None,
+        output_directory: str | None = None,
     ) -> dict[str, Any]:
         """Prepare one fixed render job."""
 
@@ -425,6 +428,12 @@ class MediaImportPolicy(Protocol):
 
     def validate_files(self, paths: list[str]) -> list[str]:
         """Validate paths without publishing a Resolve write policy."""
+
+    def validate_export_directory(self, directory: str) -> str:
+        """Resolve an existing allowed export parent without writing."""
+
+    def prepare_export_directory(self, directory: str) -> str:
+        """Validate an export parent and publish the bridge media policy."""
 
 
 class RoughCutPlanBuilder(Protocol):
@@ -1847,6 +1856,7 @@ class AgentApplication:
         profile: str = DEFAULT_RENDER_PROFILE,
         timeout_seconds: float = 30,
         idempotency_key: str | None = None,
+        output_directory: str | None = None,
     ) -> dict[str, Any]:
         """Prepare one fixed render job without starting rendering."""
         normalized_name = validate_render_name(custom_name)
@@ -1855,12 +1865,19 @@ class AgentApplication:
             not timeline_id or len(timeline_id) > 128
         ):
             raise ValueError("timeline_id must contain 1 to 128 characters.")
+        destination: dict[str, Any] = {}
+        if output_directory is not None:
+            policy = self._media_policy or MediaPolicy.from_local_config()
+            destination["output_directory"] = policy.prepare_export_directory(
+                output_directory
+            )
         return self._resolve.prepare_render_job(
             normalized_name,
             timeline_id=timeline_id,
             profile=normalized_profile.name,
             timeout_seconds=self._validated_timeout(timeout_seconds),
             idempotency_key=idempotency_key,
+            **destination,
         )
 
     def resolve_get_render_job_status(
@@ -1896,6 +1913,7 @@ class AgentApplication:
         job_id: str,
         *,
         timeout_seconds: float = 30,
+        output_directory: str | None = None,
     ) -> dict[str, Any]:
         """Verify that one completed job produced a managed non-empty MP4."""
         normalized_job_id = validate_render_job_id(job_id)
@@ -1903,7 +1921,20 @@ class AgentApplication:
             normalized_job_id,
             timeout_seconds=self._validated_timeout(timeout_seconds),
         )
-        return verify_render_output(render_status)
+        if output_directory is None:
+            return verify_render_output(render_status)
+        policy = self._media_policy or MediaPolicy.from_local_config()
+        parent = Path(policy.validate_export_directory(output_directory))
+        job = render_status.get("job", {})
+        target = job.get("TargetDir") if isinstance(job, dict) else None
+        if not isinstance(target, str):
+            raise ValueError("Render job does not contain a target directory.")
+        directory = Path(policy.validate_export_directory(target))
+        if directory.parent != parent or not re.fullmatch(
+            r"render-[0-9a-f]{32}", directory.name
+        ):
+            raise ValueError("Render target is not an export under output_directory.")
+        return verify_render_output(render_status, expected_directory=directory)
 
     def create_rough_cut(
         self,

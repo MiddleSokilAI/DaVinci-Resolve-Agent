@@ -73,7 +73,11 @@ These tools are advertised:
   last timing. This provides captions, not arbitrary designed title templates.
 - `resolve_lua_prepare_render`: queue a 1080p H.264 MP4 using the installed
   `YouTube - 1080p` preset, with audio and burnt-in subtitles. Creates a new
-  `renders/<request>/video.mp4` destination, never overwrites an existing video.
+  `renders/<request>/video.mp4` destination. Optional `output_directory` chooses
+  an existing parent inside the session media roots (for example `G:/Videos`);
+  the result is `<output_directory>/render-<request>/video.mp4`. Preparation
+  reserves a new folder, replay reuses it, and a non-empty or replaced folder
+  blocks start. Existing videos are never intentionally overwritten.
 - `resolve_lua_start_render`: start only a job prepared by this running bridge.
   Returns `accepted` before dispatch, not running or complete. The acceptance
   export precedes StartRendering because rendering blocks exports.

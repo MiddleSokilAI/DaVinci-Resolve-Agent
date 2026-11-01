@@ -744,6 +744,7 @@ def create_server(
         timeout_seconds: float = 60,
         start_frame: int | None = None,
         end_frame: int | None = None,
+        output_directory: str | None = None,
     ) -> dict[str, Any]:
         """Queue a backed-up 1080p H.264 MP4 with audio and burnt captions.
 
@@ -751,8 +752,12 @@ def create_server(
         directory; no existing video is overwritten. Returns owned render job ID.
         Optional absolute timeline bounds use an exclusive end. Supply both;
         the queued native range is verified before a later start is permitted.
+        output_directory optionally selects an existing allowed export parent
+        (e.g. G:/Videos). A unique render subfolder keeps existing files intact.
         """
         arguments: dict[str, Any] = {"timeline_name": timeline_name}
+        if output_directory is not None:
+            arguments["output_directory"] = output_directory
         if start_frame is not None or end_frame is not None:
             arguments.update(start_frame=start_frame, end_frame=end_frame)
         return await asyncio.to_thread(

@@ -200,20 +200,26 @@ def validate_finishing(
         return dict(
             a, timeline_name=name, expected_media_path=Path(item_path).as_posix()
         )
-    if action == "prepare_render" and set(a) == {
-        "timeline_name",
-        "start_frame",
-        "end_frame",
-    }:
-        start, end = a["start_frame"], a["end_frame"]
-        if (
-            type(start) is not int
-            or type(end) is not int
-            or not 0 <= start < end <= 2_147_483_647
-        ):
-            raise ValueError("Render range requires integer start and exclusive end.")
-        return {"timeline_name": name, "start_frame": start, "end_frame": end}
-    if action in {"prepare_render", "get_timeline_summary"} and set(a) == {
+    if action == "prepare_render":
+        if set(a) - {"timeline_name", "start_frame", "end_frame", "output_directory"}:
+            raise ValueError("Invalid render fields.")
+        render_arguments: dict[str, Any] = {"timeline_name": name}
+        if "start_frame" in a or "end_frame" in a:
+            start, end = a.get("start_frame"), a.get("end_frame")
+            if (
+                type(start) is not int or type(end) is not int
+                or not 0 <= start < end <= 2_147_483_647
+            ):
+                raise ValueError(
+                    "Render range requires integer start and exclusive end."
+                )
+            render_arguments.update(start_frame=start, end_frame=end)
+        if "output_directory" in a:
+            render_arguments["output_directory"] = Path(
+                MediaPolicy(roots).validate_export_directory(a["output_directory"])
+            ).as_posix()
+        return render_arguments
+    if action == "get_timeline_summary" and set(a) == {
         "timeline_name"
     }:
         return {"timeline_name": name}

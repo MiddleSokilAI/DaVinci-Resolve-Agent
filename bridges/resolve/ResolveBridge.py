@@ -1144,15 +1144,12 @@ def _validate_write_arguments(action: str, arguments: dict[str, Any]) -> None:
             raise ValueError("confirm_create must be true.")
         return
     if action == "prepare_render_job":
-        if set(arguments) not in (
-            {"custom_name"},
-            {"custom_name", "profile"},
-            {"custom_name", "timeline_id"},
-            {"custom_name", "timeline_id", "profile"},
-        ):
+        if "custom_name" not in arguments or set(arguments) - {
+            "custom_name", "profile", "timeline_id", "output_directory"
+        }:
             raise ValueError(
                 "prepare_render_job requires custom_name and optional "
-                "timeline_id/profile."
+                "timeline_id/profile/output_directory."
             )
         _validate_render_name(arguments["custom_name"])
         timeline_id = arguments.get("timeline_id")
@@ -1165,6 +1162,11 @@ def _validate_write_arguments(action: str, arguments: dict[str, Any]) -> None:
         _validate_render_profile(
             arguments.get("profile", DEFAULT_RENDER_PROFILE)
         )
+        if "output_directory" in arguments and (
+            not isinstance(arguments["output_directory"], str)
+            or not Path(arguments["output_directory"]).is_absolute()
+        ):
+            raise ValueError("output_directory must be an absolute directory.")
         return
     if action == "start_render_job":
         _validate_render_job_arguments(action, arguments)
@@ -1220,6 +1222,24 @@ def _render_output_directory() -> Path:
     output.mkdir(parents=True, exist_ok=True)
     _ensure_output_capacity(output)
     return output
+
+
+def _validate_export_parent(value: Any, state_directory: Path) -> Path:
+    """Require an existing canonical export parent under published media roots."""
+    if not isinstance(value, str) or not value or "\x00" in value:
+        raise ValueError("output_directory must be an absolute directory.")
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        raise ValueError("output_directory must be absolute.")
+    resolved = candidate.resolve(strict=True)
+    if not resolved.is_dir() or not any(
+        resolved.is_relative_to(root) for root in _load_media_roots(state_directory)
+    ):
+        raise BridgeOperationError(
+            "RENDER_OUTPUT_DIRECTORY_INVALID",
+            "output_directory must be an existing allowed media directory.",
+        )
+    return resolved
 
 
 def _audio_source_output_directory() -> Path:
@@ -3391,14 +3411,33 @@ def _verify_agent_prepared_render_job(
             details={"job_id": job_id},
         )
     kind = profile.get("kind")
-    expected_directory = (
-        _audio_source_output_directory()
-        if kind == "audio"
-        else _render_output_directory()
-    )
     extension = profile.get("extension", "") if isinstance(profile, dict) else ""
     expected_name = f"{prepared.get('custom_name', '')}{extension}"
     prepared_directory = Path(str(prepared.get("target_directory", ""))).resolve()
+    if "output_directory" in prepared:
+        export_parent = _validate_export_parent(
+            prepared["output_directory"], state_directory
+        )
+        if (
+            prepared_directory.parent != export_parent
+            or re.fullmatch(r"render-[0-9a-f]{32}", prepared_directory.name) is None
+            or prepared_directory != Path(prepared["target_directory"])
+        ):
+            raise BridgeOperationError(
+                "RENDER_JOB_POLICY_MISMATCH",
+                "Export target no longer matches its parent.",
+            )
+        if not prepared_directory.is_dir() or any(prepared_directory.iterdir()):
+            raise BridgeOperationError(
+                "RENDER_OUTPUT_EXISTS", "Export directory is no longer empty."
+            )
+        expected_directory = prepared_directory
+    else:
+        expected_directory = (
+            _audio_source_output_directory()
+            if kind == "audio"
+            else _render_output_directory()
+        )
     live_directory = Path(str(job.get("TargetDir", ""))).resolve()
     common_valid = (
         prepared.get("resolve_preset") == profile["resolve_preset"]
@@ -3690,6 +3729,12 @@ def _execute_write_command(
     project_manager, project, media_pool = _require_project(resolve)
     action = command["action"]
     arguments = command["arguments"]
+
+    export_parent = (
+        _validate_export_parent(arguments["output_directory"], directories["state"])
+        if action == "prepare_render_job" and "output_directory" in arguments
+        else None
+    )
 
     if action == "import_media":
         arguments = {
@@ -5531,6 +5576,12 @@ def _execute_write_command(
             }
         elif action == "prepare_render_job":
             custom_name = _validate_render_name(arguments["custom_name"])
+            export_directory = None
+            if export_parent is not None:
+                suffix = hashlib.sha256(command["command_id"].encode()).hexdigest()[:32]
+                export_directory = export_parent / f"render-{suffix}"
+                export_directory.mkdir(exist_ok=False)
+                _ensure_output_capacity(export_directory)
             profile_name = arguments.get(
                 "profile",
                 DEFAULT_RENDER_PROFILE,
@@ -5650,7 +5701,9 @@ def _execute_write_command(
                         retryable=True,
                     )
                 if profile["kind"] == "audio":
-                    target_directory = _audio_source_output_directory()
+                    target_directory = (
+                        export_directory or _audio_source_output_directory()
+                    )
                     settings = {
                         "SelectAllFrames": True,
                         "TargetDir": str(target_directory),
@@ -5661,7 +5714,7 @@ def _execute_write_command(
                         "AudioSampleRate": profile["audio_sample_rate"],
                     }
                 else:
-                    target_directory = _render_output_directory()
+                    target_directory = export_directory or _render_output_directory()
                     settings = {
                         "SelectAllFrames": True,
                         "TargetDir": str(target_directory),
@@ -5745,6 +5798,8 @@ def _execute_write_command(
                 "started": False,
                 "backup_path": backup_path,
             }
+            if export_parent is not None:
+                result["output_directory"] = str(export_parent)
             if profile["kind"] == "audio":
                 result.update(
                     {

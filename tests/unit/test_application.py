@@ -492,6 +492,7 @@ class StubResolveReader:
         profile: str = "youtube-1080p-h264-v1",
         timeout_seconds: float = 30,
         idempotency_key: str | None = None,
+        output_directory: str | None = None,
     ) -> dict[str, Any]:
         self.timeouts.append(timeout_seconds)
         return {
@@ -559,6 +560,12 @@ class StubCompletedResolveReader(StubResolveReader):
 
 
 class StubMediaPolicy:
+    def prepare_export_directory(self, directory: str) -> str:
+        return directory
+
+    def validate_export_directory(self, directory: str) -> str:
+        return directory
+
     def __init__(self) -> None:
         self.paths: list[str] = []
 
