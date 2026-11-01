@@ -18,6 +18,7 @@ from providers.resolve.lua_ripple import validate_batch, validate_ripple, valida
 FINISH_ACTIONS = frozenset(
     {"set_clip_properties", "add_subtitles", "prepare_render", "start_render"}
 )
+EXPORT_DIRECTORY_CAPABILITY = "render_output_directory_v1"
 PROPERTY_LIMITS = {
     "ZoomX": (0.1, 4),
     "ZoomY": (0.1, 4),

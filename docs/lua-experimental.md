@@ -78,6 +78,10 @@ These tools are advertised:
   the result is `<output_directory>/render-<request>/video.mp4`. Preparation
   reserves a new folder, replay reuses it, and a non-empty or replaced folder
   blocks start. Existing videos are never intentionally overwritten.
+  Selected parents require the session capability `render_output_directory_v1`;
+  older sessions reject this option before creating a request or receipt. The
+  acknowledgement also distinguishes selected-directory preparation from older
+  native modules, so a legacy default-directory job is never reported as an export.
 - `resolve_lua_start_render`: start only a job prepared by this running bridge.
   Returns `accepted` before dispatch, not running or complete. The acceptance
   export precedes StartRendering because rendering blocks exports.

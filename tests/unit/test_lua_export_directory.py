@@ -47,7 +47,7 @@ def test_native_lua_queues_and_owns_the_selected_render_target(
     request = lua.table(action="prepare_render", id="abc", arguments=args)
     mutation = module.preflight(lua.globals().project, request)
     assert lua.globals().calls == 0
-    assert mutation() == "job_job-1"
+    assert mutation() == ("job_export_job-1" if parent else "job_job-1")
     expected = "G:/Videos/render-abc" if parent else "session/renders/abc"
     assert lua.globals().target == jobs["job-1"].directory == expected
     assert lua.globals().page == "edit"

@@ -396,10 +396,11 @@ return function(api, root, helpers, shared)
                     mark_in=ranged and a.start_frame or nil,
                     mark_out=ranged and a.end_frame-1 or nil}
                 if previous_page then api:OpenPage(previous_page) end
+                local prefix = a.output_directory and "job_export_" or "job_"
                 if ranged then
-                    return string.format("job_%s_%d_%d",id,a.start_frame,a.end_frame)
+                    return string.format(prefix .. "%s_%d_%d",id,a.start_frame,a.end_frame)
                 end
-                return "job_" .. id
+                return prefix .. id
             end
         end
         error("INVALID_ARGUMENTS", 0)

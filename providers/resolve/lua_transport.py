@@ -31,6 +31,7 @@ from providers.resolve.lua_editing import (
     validate_edit,
 )
 from providers.resolve.lua_finishing import (
+    EXPORT_DIRECTORY_CAPABILITY,
     FINISH_ACTIONS,
     validate_finishing,
     verify_video,
@@ -157,6 +158,7 @@ def prepare(root: Path, media_roots: list[Path] | None = None) -> Path:
                 "capabilities": [
                     "quit_resolve", "create_project", "recording_api_v1",
                     PROJECT_CONTEXT_CAPABILITY,
+                    EXPORT_DIRECTORY_CAPABILITY,
                 ],
             }
         ),
@@ -327,6 +329,15 @@ class LuaSnapshotClient:
             )
         write = action in WRITE_ACTIONS | FINISH_ACTIONS
         recording_request = isinstance(arguments, dict) and "recording" in arguments
+        if (
+            action == "prepare_render" and isinstance(arguments, dict)
+            and "output_directory" in arguments
+            and EXPORT_DIRECTORY_CAPABILITY not in self.capabilities
+        ):
+            raise ValueError(
+                "Selected export directories require a render_output_directory_v1 "
+                "Lua session; no native request was dispatched."
+            )
         if recording_request and "recording_api_v1" not in self.capabilities:
             raise ValueError(
                 "Recording controls require a freshly prepared "
@@ -707,10 +718,13 @@ class LuaSnapshotClient:
                         result["readback_verified_by"] = "ResolveLuaRecording"
                     if action == "prepare_render":
                         ranged = "start_frame" in normalized
+                        prefix = (
+                            "job_export_"
+                            if "output_directory" in normalized else "job_"
+                        )
                         job_match = re.fullmatch(
-                            r"job_([a-zA-Z0-9-]{1,64})_(\d+)_(\d+)"
-                            if ranged
-                            else r"job_([a-zA-Z0-9-]{1,64})",
+                            prefix + r"([a-zA-Z0-9-]{1,64})"
+                            + (r"_(\d+)_(\d+)" if ranged else ""),
                             token or "",
                         )
                         if (
