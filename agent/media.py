@@ -123,6 +123,31 @@ class MediaPolicy:
         """Return the configured immutable scope without widening it."""
         return self._allowed_roots
 
+    def validate_export_directory(self, directory: str) -> str:
+        """Resolve an existing export parent inside the configured media roots."""
+        if not isinstance(directory, str) or not directory or "\x00" in directory:
+            raise MediaPolicyError("output_directory must be an absolute directory.")
+        candidate = Path(directory)
+        if not candidate.is_absolute():
+            raise MediaPolicyError("output_directory must be absolute.")
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError as error:
+            raise MediaPolicyError(
+                "output_directory must be an existing directory."
+            ) from error
+        if not resolved.is_dir():
+            raise MediaPolicyError("output_directory must be an existing directory.")
+        if not any(resolved.is_relative_to(root) for root in self._allowed_roots):
+            raise MediaPolicyError("output_directory is outside allowed media roots.")
+        return str(resolved)
+
+    def prepare_export_directory(self, directory: str) -> str:
+        """Validate an export parent and publish its existing allowlist scope."""
+        normalized = self.validate_export_directory(directory)
+        self._publish()
+        return normalized
+
     def _publish(self) -> None:
         policy_path = self._runtime_root / "state" / "media-policy.json"
         policy_path.parent.mkdir(parents=True, exist_ok=True)

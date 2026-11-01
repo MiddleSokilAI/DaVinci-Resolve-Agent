@@ -345,6 +345,8 @@ return function(api, root, helpers, shared)
                 check(math.abs(c.last-timeline:GetStartFrame()-a.last_end*fps) <= 1.1, "SUBTITLE_TIMING_FAILED")
             end
         elseif action == "prepare_render" then
+            check(a.output_directory == nil or type(a.output_directory) == "string"
+                and allowed(a.output_directory .. "/video.mp4"), "INVALID_ARGUMENTS")
             check(timeline:GetEndFrame() > timeline:GetStartFrame(), "EMPTY_TIMELINE")
             local ranged=a.start_frame~=nil or a.end_frame~=nil
             if ranged then
@@ -362,7 +364,9 @@ return function(api, root, helpers, shared)
                 check(project:LoadRenderPreset("YouTube - 1080p") == true, "RENDER_PRESET_FAILED")
                 check(project:SetCurrentRenderFormatAndCodec("MP4", "H264") == true, "RENDER_FORMAT_FAILED")
                 check(project:SetCurrentRenderMode(1) == true, "RENDER_MODE_FAILED")
-                local directory = root .. "/renders/" .. request.id
+                local directory = a.output_directory
+                    and a.output_directory .. "/render-" .. request.id
+                    or root .. "/renders/" .. request.id
                 local settings={SelectAllFrames=not ranged, TargetDir=directory,
                     CustomName="video", ExportVideo=true, ExportAudio=true,
                     FormatWidth=1920, FormatHeight=1080}
@@ -392,10 +396,11 @@ return function(api, root, helpers, shared)
                     mark_in=ranged and a.start_frame or nil,
                     mark_out=ranged and a.end_frame-1 or nil}
                 if previous_page then api:OpenPage(previous_page) end
+                local prefix = a.output_directory and "job_export_" or "job_"
                 if ranged then
-                    return string.format("job_%s_%d_%d",id,a.start_frame,a.end_frame)
+                    return string.format(prefix .. "%s_%d_%d",id,a.start_frame,a.end_frame)
                 end
-                return "job_" .. id
+                return prefix .. id
             end
         end
         error("INVALID_ARGUMENTS", 0)

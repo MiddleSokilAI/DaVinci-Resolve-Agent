@@ -306,6 +306,91 @@ def test_render_range_is_bound_to_receipt_and_preserves_full_default(
         )
 
 
+@pytest.mark.parametrize("ranged", [False, True])
+def test_selected_lua_render_parent_is_reserved_and_replay_bound(
+    tmp_path: Path, ranged: bool,
+) -> None:
+    destination = tmp_path / "Videos"
+    destination.mkdir()
+    (destination / "existing.mp4").write_bytes(b"preserve")
+    root = tmp_path / "session"
+    prepare(root, media_roots=[destination])
+    args: dict[str, Any] = {
+        "timeline_name": "Review", "output_directory": destination.as_posix(),
+    }
+    if ranged:
+        args.update(start_frame=10, end_frame=20)
+    kwargs: dict[str, Any] = dict(
+        arguments=args, expected_project_id="test-project", confirm=True,
+        idempotency_key="selected-parent",
+    )
+    worker = serve(root, "ok_job_export_selected" + ("_10_20" if ranged else ""))
+    client = LuaSnapshotClient(root)
+    try:
+        result = client.request("prepare_render", 3, **kwargs)
+    finally:
+        worker.join(4)
+    output = Path(result["output_path"])
+    assert output.parent.parent == destination
+    assert output.parent.is_dir()
+    assert not (root / "renders").exists()
+    assert client.request("prepare_render", 1, **kwargs)["replayed"]
+    other = destination / "other"
+    other.mkdir()
+    with pytest.raises(ValueError, match="different arguments"):
+        client.request("prepare_render", 1, **dict(
+            kwargs, arguments=dict(args, output_directory=other.as_posix()),
+        ))
+    output.write_bytes(b"do not overwrite")
+    with pytest.raises(ValueError, match="no longer empty"):
+        client.request(
+            "start_render", arguments={"job_id": result["job_id"]},
+            expected_project_id="test-project", confirm=True, idempotency_key="start",
+        )
+    assert output.read_bytes() == b"do not overwrite"
+    assert (destination / "existing.mp4").read_bytes() == b"preserve"
+
+
+def test_old_lua_session_rejects_export_parent_without_dispatch(tmp_path: Path) -> None:
+    destination = tmp_path / "Videos"
+    destination.mkdir()
+    root = tmp_path / "session"
+    prepare(root, media_roots=[destination])
+    metadata = json.loads((root / "session.json").read_text())
+    metadata["capabilities"].remove("render_output_directory_v1")
+    (root / "session.json").write_text(json.dumps(metadata), encoding="utf-8")
+    with pytest.raises(ValueError, match="render_output_directory_v1"):
+        LuaSnapshotClient(root).request(
+            "prepare_render", arguments={
+                "timeline_name": "Review", "output_directory": str(destination),
+            }, expected_project_id="test-project", confirm=True, idempotency_key="old",
+        )
+    assert list(destination.iterdir()) == []
+    assert not (root / "client.lock").exists()
+    assert not (root / "receipts").exists()
+    assert (root / "request.lua").read_text() == "return nil\n"
+
+
+def test_export_parent_rejects_legacy_native_acknowledgement(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "Videos"
+    destination.mkdir()
+    root = tmp_path / "session"
+    prepare(root, media_roots=[destination])
+    worker = serve(root, "ok_job_old-bridge")
+    try:
+        with pytest.raises(BridgeProtocolError, match="render job acknowledgement"):
+            LuaSnapshotClient(root).request(
+                "prepare_render", 3, arguments={
+                    "timeline_name": "Review", "output_directory": str(destination),
+                }, expected_project_id="test-project", confirm=True,
+                idempotency_key="ack",
+            )
+    finally:
+        worker.join(4)
+
+
 def test_render_requires_owned_job_and_replays_preparation(tmp_path: Path) -> None:
     root = tmp_path / "session"
     prepare(root)

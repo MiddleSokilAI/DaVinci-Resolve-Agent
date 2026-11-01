@@ -42,6 +42,16 @@ class _RuntimeMediaPolicy:
         policy = MediaPolicy.from_local_config(runtime_root=self.runtime)
         return policy.validate_files(paths)
 
+    def validate_export_directory(self, directory: str) -> str:
+        """Validate an export location against current local configuration."""
+        policy = MediaPolicy.from_local_config(runtime_root=self.runtime)
+        return policy.validate_export_directory(directory)
+
+    def prepare_export_directory(self, directory: str) -> str:
+        """Publish the same allowed roots to the selected SDK queue."""
+        policy = MediaPolicy.from_local_config(runtime_root=self.runtime)
+        return policy.prepare_export_directory(directory)
+
 
 def default_profile(path: Path | None = None) -> Profile:
     root = runtime_directory()
@@ -246,6 +256,21 @@ class AutomaticServer(MCPServer[Any]):
             validate(arguments, definitions[name].input_schema)
         except ValidationError as error:
             return _error("INVALID_ARGUMENTS", error.message)
+        if arguments.get("output_directory") is not None and name in {
+            "resolve_prepare_render_job", "resolve_verify_render_output",
+            "resolve_lua_prepare_render",
+        }:
+            try:
+                policy = (
+                    MediaPolicy(self.profile.media_roots)
+                    if name == "resolve_lua_prepare_render"
+                    else MediaPolicy.from_local_config(
+                        runtime_root=self.profile.runtime_base
+                    )
+                )
+                policy.validate_export_directory(arguments["output_directory"])
+            except (ValueError, OSError) as error:
+                return _error("INVALID_ARGUMENTS", str(error))
         if name == "video_agent_capabilities":
             return await _complete_work(self._capabilities(arguments))
         primary = {tool.name for tool in await self.primary.list_tools()}

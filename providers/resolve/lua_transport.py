@@ -20,6 +20,7 @@ from uuid import uuid4
 from xml.etree import ElementTree as ET
 
 from agent.client import BridgeProtocolError, CommandTimeoutError
+from agent.media import MediaPolicy
 from providers.resolve.lua_compat import with_loader
 from providers.resolve.lua_editing import (
     WRITE_ACTIONS,
@@ -30,6 +31,7 @@ from providers.resolve.lua_editing import (
     validate_edit,
 )
 from providers.resolve.lua_finishing import (
+    EXPORT_DIRECTORY_CAPABILITY,
     FINISH_ACTIONS,
     validate_finishing,
     verify_video,
@@ -156,6 +158,7 @@ def prepare(root: Path, media_roots: list[Path] | None = None) -> Path:
                 "capabilities": [
                     "quit_resolve", "create_project", "recording_api_v1",
                     PROJECT_CONTEXT_CAPABILITY,
+                    EXPORT_DIRECTORY_CAPABILITY,
                 ],
             }
         ),
@@ -192,6 +195,21 @@ def read_project_snapshot(path: Path) -> dict[str, str]:
     if project.tag != "SM_Project" or not name or not identity:
         raise BridgeProtocolError("Export has no recognized project identity.")
     return {"name": name, "id": identity}
+
+
+def _validated_render_output(job: dict[str, Any], roots: list[Path]) -> Path:
+    """Reject replaced export folders before native start or output inspection."""
+    destination = Path(job["output_path"])
+    parent = job.get("arguments", {}).get("output_directory")
+    if parent is not None:
+        selected = Path(MediaPolicy(roots).validate_export_directory(parent))
+        if (
+            destination.parent.parent != selected
+            or destination.parent.resolve() != destination.parent
+            or destination.is_symlink()
+        ):
+            raise ValueError("Render destination changed after preparation.")
+    return destination
 
 
 class LuaSnapshotClient:
@@ -311,6 +329,15 @@ class LuaSnapshotClient:
             )
         write = action in WRITE_ACTIONS | FINISH_ACTIONS
         recording_request = isinstance(arguments, dict) and "recording" in arguments
+        if (
+            action == "prepare_render" and isinstance(arguments, dict)
+            and "output_directory" in arguments
+            and EXPORT_DIRECTORY_CAPABILITY not in self.capabilities
+        ):
+            raise ValueError(
+                "Selected export directories require a render_output_directory_v1 "
+                "Lua session; no native request was dispatched."
+            )
         if recording_request and "recording_api_v1" not in self.capabilities:
             raise ValueError(
                 "Recording controls require a freshly prepared "
@@ -474,14 +501,19 @@ class LuaSnapshotClient:
             if receipt and not resuming:
                 if action == "start_render":
                     assert owned_job is not None
-                    destination = Path(owned_job["output_path"])
+                    destination = _validated_render_output(owned_job, self.media_roots)
                     if destination.exists() or any(destination.parent.iterdir()):
                         raise ValueError(
                             "Render destination is no longer empty; refusing overwrite."
                         )
                 receipt.begin(command_id)
             if action == "prepare_render" and not resuming:
-                (self.root / "renders" / command_id).mkdir(parents=True, exist_ok=False)
+                render_directory = (
+                    Path(normalized["output_directory"]) / f"render-{command_id}"
+                    if "output_directory" in normalized
+                    else self.root / "renders" / command_id
+                )
+                render_directory.mkdir(parents=True, exist_ok=False)
             payload = (
                 "return {session="
                 + lua_string(self.session)
@@ -686,10 +718,13 @@ class LuaSnapshotClient:
                         result["readback_verified_by"] = "ResolveLuaRecording"
                     if action == "prepare_render":
                         ranged = "start_frame" in normalized
+                        prefix = (
+                            "job_export_"
+                            if "output_directory" in normalized else "job_"
+                        )
                         job_match = re.fullmatch(
-                            r"job_([a-zA-Z0-9-]{1,64})_(\d+)_(\d+)"
-                            if ranged
-                            else r"job_([a-zA-Z0-9-]{1,64})",
+                            prefix + r"([a-zA-Z0-9-]{1,64})"
+                            + (r"_(\d+)_(\d+)" if ranged else ""),
                             token or "",
                         )
                         if (
@@ -706,7 +741,12 @@ class LuaSnapshotClient:
                         result.update(
                             job_id=job_match[1],
                             output_path=str(
-                                self.root / "renders" / command_id / "video.mp4"
+                                (
+                                    Path(normalized["output_directory"])
+                                    / f"render-{command_id}"
+                                    if "output_directory" in normalized
+                                    else self.root / "renders" / command_id
+                                ) / "video.mp4"
                             ),
                         )
                     assert receipt is not None
@@ -926,7 +966,9 @@ class LuaSnapshotClient:
                         "project": project,
                     }
                     if token == "state_complete":
-                        result["output"] = verify_video(Path(owned_job["output_path"]))
+                        result["output"] = verify_video(
+                            _validated_render_output(owned_job, self.media_roots)
+                        )
                     return result
                 if action == "ping":
                     return {

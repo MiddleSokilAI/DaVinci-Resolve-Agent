@@ -799,11 +799,14 @@ class ResolveProviderClient:
         profile: str = DEFAULT_RENDER_PROFILE,
         timeout_seconds: float = 30,
         idempotency_key: str | None = None,
+        output_directory: str | None = None,
     ) -> dict[str, Any]:
         """Add one fixed safe render job with a mandatory project backup."""
         arguments = {"custom_name": custom_name, "profile": profile}
         if timeline_id is not None:
             arguments["timeline_id"] = timeline_id
+        if output_directory is not None:
+            arguments["output_directory"] = output_directory
         result = self._client.request(
             provider="resolve",
             action="prepare_render_job",

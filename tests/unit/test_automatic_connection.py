@@ -140,6 +140,12 @@ def test_catalogue_and_unverified_capabilities_do_not_bootstrap(
     async def scenario() -> None:
         tools = await server.list_tools()
         assert len(tools) == len({tool.name for tool in tools}) == 157
+        for tool in tools:
+            if tool.name in {
+                "resolve_prepare_render_job", "resolve_lua_prepare_render",
+                "resolve_verify_render_output",
+            }:
+                assert "output_directory" in tool.input_schema["properties"]
         assert {
             "resolve_create_project",
             "sync_screen_and_webcam",
@@ -154,6 +160,36 @@ def test_catalogue_and_unverified_capabilities_do_not_bootstrap(
         )
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("name", [
+    "resolve_prepare_render_job", "resolve_lua_prepare_render",
+    "resolve_verify_render_output",
+])
+def test_invalid_export_parent_does_not_bootstrap_resolve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str,
+) -> None:
+    server = AutomaticServer(profile_at(tmp_path, enabled=False), start_worker=False)
+
+    async def forbidden() -> None:
+        pytest.fail("Invalid export parent started native connection")
+
+    monkeypatch.setattr(server, "_ready", forbidden)
+    monkeypatch.setattr(
+        type(server.connection), "ensure",
+        lambda *args, **kwargs: pytest.fail("Invalid export parent started Resolve"),
+    )
+    args: dict[str, Any] = {"output_directory": "relative"}
+    if name == "resolve_prepare_render_job":
+        args["custom_name"] = "Review"
+    elif name == "resolve_verify_render_output":
+        args["job_id"] = "job-1"
+    else:
+        args.update(timeline_name="Review", expected_project_id="project",
+                    idempotency_key="invalid", confirm=True)
+    result = asyncio.run(server.call_tool(name, args))
+    assert result.is_error
+    assert "INVALID_ARGUMENTS" in result.content[0].text
 
 
 def test_disabled_connection_still_returns_truthful_capability_report(

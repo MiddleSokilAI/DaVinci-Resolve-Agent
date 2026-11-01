@@ -467,6 +467,7 @@ class StubResolveReader:
         profile: str = "youtube-1080p-h264-v1",
         timeout_seconds: float = 30,
         idempotency_key: str | None = None,
+        output_directory: str | None = None,
     ) -> dict[str, Any]:
         return {
             "job_id": "job-1",
@@ -494,6 +495,12 @@ class StubResolveReader:
 
 
 class StubMediaPolicy:
+    def prepare_export_directory(self, directory: str) -> str:
+        return directory
+
+    def validate_export_directory(self, directory: str) -> str:
+        return directory
+
     def prepare_import(self, paths: list[str]) -> list[str]:
         return paths
 
@@ -932,6 +939,14 @@ def test_mcp_exposes_fixed_m5_tool_surface() -> None:
         async with Client(server) as client:
             tools = await client.list_tools()
             names = {tool.name for tool in tools.tools}
+            schemas = {tool.name: tool.input_schema for tool in tools.tools}
+            for render_tool in (
+                "resolve_prepare_render_job", "resolve_verify_render_output"
+            ):
+                assert "output_directory" in schemas[render_tool]["properties"]
+                assert "output_directory" not in schemas[render_tool].get(
+                    "required", []
+                )
             annotations = {
                 tool.name: tool.annotations for tool in tools.tools
             }

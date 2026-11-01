@@ -363,7 +363,7 @@ M9 keeps render configuration finite:
 resolve_get_render_options
  └─ GetRenderResolutions("MP4", "H264")
 
-resolve_prepare_render_job(custom_name, profile)
+resolve_prepare_render_job(custom_name, profile, output_directory=None)
  ├─ youtube-1080p-h264-v1 -> YouTube - 1080p -> 1920x1080
  └─ youtube-2160p-h264-v1 -> YouTube - 2160p -> 3840x2160
 ```
@@ -372,7 +372,12 @@ The bridge verifies the built-in preset and exact resolution before
 `AddRenderJob`, explicitly applies documented dimensions, and stores the
 selected profile in the preparation receipt. M8 start policy derives its
 expected preset and dimensions from that receipt. Arbitrary dimensions,
-presets, codecs, paths, and upload targets are not representable.
+presets, codecs, and upload targets are not representable. An optional existing
+export parent inside the configured media roots selects a fresh `render-<id>`
+subdirectory. The receipt binds the selected parent and actual target; start
+revalidates the allowlist, native target and empty directory. The Lua finishing
+route offers the same selection while retaining its owned-job checks. Without
+the option, both routes retain their original managed output locations.
 
 Resolve 21 Free 21.0.3.7 live discovery returned 3840x2160 for MP4/H.264 and
 the `YouTube - 2160p` preset. Live write validation then added one matching
