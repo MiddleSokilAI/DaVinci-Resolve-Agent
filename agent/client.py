@@ -32,6 +32,7 @@ class CommandTimeoutError(AgentClientError):
     def __init__(self, command_id: str, timeout_seconds: float) -> None:
         self.command_id = command_id
         self.timeout_seconds = timeout_seconds
+        self.idempotency_key: str | None = None
         super().__init__(
             f"Command {command_id} timed out after {timeout_seconds:g}s. "
             "Connection recovery is automatic; preserve the original write key."
@@ -175,7 +176,8 @@ class FilesystemCommandClient:
                 response_path=response_path,
                 timeout_seconds=timeout_seconds,
             )
-        except CommandTimeoutError:
+        except CommandTimeoutError as error:
+            error.idempotency_key = stable_key
             with suppress(AuditLogError):
                 audit_record.mark_timeout()
             raise
