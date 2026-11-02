@@ -844,6 +844,10 @@
                   "youtube-2160p-h264-v1",
                   "audio-only-pcm-wav-v1"
                 ]
+              },
+              "output_directory": {
+                "type": "string",
+                "minLength": 1
               }
             }
           }

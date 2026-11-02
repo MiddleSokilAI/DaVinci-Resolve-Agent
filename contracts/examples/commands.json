@@ -492,7 +492,8 @@
     "arguments": {
       "custom_name": "Agent Export",
       "timeline_id": "timeline-1",
-      "profile": "youtube-1080p-h264-v1"
+      "profile": "youtube-1080p-h264-v1",
+      "output_directory": "G:/Videos"
     },
     "safety": {"allow_destructive": false, "create_backup": true}
   },
