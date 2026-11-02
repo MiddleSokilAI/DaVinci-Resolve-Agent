@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 
 from mcp.server import MCPServer
-from mcp.types import ToolAnnotations
+from mcp.types import CallToolResult, TextContent, ToolAnnotations
 
 from agent import __version__
 from agent.application import AgentApplication
 from agent.capabilities import workflow_capabilities
+from agent.client import AgentClientError, BridgeCommandError, CommandTimeoutError
 from agent.media import MediaPolicy
 from agent.rendering import DEFAULT_RENDER_PROFILE
 from agent.workflow_audit import WorkflowAuditLog
@@ -35,6 +37,48 @@ DESTRUCTIVE_WRITE_TOOL = ToolAnnotations(
     idempotent_hint=True,
     open_world_hint=False,
 )
+
+# A Lua preset exchange may take several seconds per SDK call. Discovery of
+# every format and guarded preparation exceed the ordinary 30-second budget.
+RENDER_TIMEOUT_SECONDS = 300
+
+
+def render_tool_result(result: dict[str, Any]) -> CallToolResult:
+    """Keep successful render payloads unchanged in both MCP representations."""
+    return CallToolResult(
+        content=[TextContent(type="text", text=json.dumps(result))],
+        structured_content=result,
+    )
+
+
+def render_tool_error(error: Exception) -> CallToolResult:
+    """Expose expected render failures and preserve uncertain command ownership."""
+    code = getattr(error, "code", "BRIDGE_CLIENT_ERROR")
+    detail = str(error)
+    evidence: dict[str, Any] = {"code": code, "detail": detail, "retryable": False}
+    if isinstance(error, ValueError):
+        evidence["code"] = "INVALID_ARGUMENTS"
+    elif isinstance(error, BridgeCommandError):
+        evidence["retryable"] = error.retryable
+    elif isinstance(error, CommandTimeoutError):
+        evidence.update(
+            code="COMMAND_TIMEOUT",
+            command_id=error.command_id,
+            timeout_seconds=error.timeout_seconds,
+            idempotency_key=error.idempotency_key,
+            outcome="unverified",
+        )
+        evidence["detail"] = detail + (
+            " The operation may still finish. Inspect the original receipt; "
+            "do not submit preparation with a new idempotency key."
+        )
+    return CallToolResult(
+        content=[
+            TextContent(type="text", text=f"{evidence['code']}: {evidence['detail']}")
+        ],
+        structured_content=evidence,
+        is_error=True,
+    )
 
 
 def create_server(application: AgentApplication | None = None) -> MCPServer:
@@ -246,13 +290,17 @@ def create_server(application: AgentApplication | None = None) -> MCPServer:
 
     @server.tool(annotations=READ_ONLY_TOOL)
     async def resolve_get_render_options(
-        timeout_seconds: float = 30,
-    ) -> dict[str, Any]:
-        """Discover documented render formats, codecs, presets, and jobs."""
-        return await asyncio.to_thread(
-            service.resolve_get_render_options,
-            timeout_seconds,
-        )
+        timeout_seconds: float = RENDER_TIMEOUT_SECONDS,
+    ) -> CallToolResult:
+        """Discover render options with a 300-second Lua transport budget."""
+        try:
+            return render_tool_result(
+                await asyncio.to_thread(
+                    service.resolve_get_render_options, timeout_seconds
+                )
+            )
+        except (AgentClientError, ValueError) as error:
+            return render_tool_error(error)
 
     @server.tool(annotations=WRITE_TOOL)
     async def resolve_import_media(
@@ -556,25 +604,32 @@ def create_server(application: AgentApplication | None = None) -> MCPServer:
         custom_name: str,
         timeline_id: str | None = None,
         profile: str = DEFAULT_RENDER_PROFILE,
-        timeout_seconds: float = 30,
+        timeout_seconds: float = RENDER_TIMEOUT_SECONDS,
         idempotency_key: str | None = None,
         output_directory: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> CallToolResult:
         """Prepare MP4/H264 without starting; optionally choose an export parent.
 
         output_directory must exist inside allowed media roots, e.g. G:/Videos.
         A unique render subfolder prevents overwriting files. Omit for the
         default managed render location. Return value includes target_directory.
+        Allow up to 300 seconds for Lua transport. On timeout preserve the
+        original key and inspect its receipt before another preparation.
         """
-        return await asyncio.to_thread(
-            service.resolve_prepare_render_job,
-            custom_name,
-            timeline_id=timeline_id,
-            profile=profile,
-            timeout_seconds=timeout_seconds,
-            idempotency_key=idempotency_key,
-            output_directory=output_directory,
-        )
+        try:
+            return render_tool_result(
+                await asyncio.to_thread(
+                    service.resolve_prepare_render_job,
+                    custom_name,
+                    timeline_id=timeline_id,
+                    profile=profile,
+                    timeout_seconds=timeout_seconds,
+                    idempotency_key=idempotency_key,
+                    output_directory=output_directory,
+                )
+            )
+        except (AgentClientError, ValueError) as error:
+            return render_tool_error(error)
 
     @server.tool(annotations=READ_ONLY_TOOL)
     async def resolve_get_render_job_status(
@@ -920,9 +975,7 @@ def create_server(application: AgentApplication | None = None) -> MCPServer:
     @server.tool(annotations=READ_ONLY_TOOL)
     async def get_animation_template(template_id: str) -> dict[str, Any]:
         """Return one immutable packaged animation template manifest."""
-        return await asyncio.to_thread(
-            service.get_animation_template, template_id
-        )
+        return await asyncio.to_thread(service.get_animation_template, template_id)
 
     @server.tool(annotations=READ_ONLY_TOOL)
     async def preview_animation_template(

@@ -15,14 +15,19 @@ from mcp.types import CallToolResult, TextContent, Tool
 from agent.application import AgentApplication
 from agent.bridge_state import load_bridge_state
 from agent.capabilities import WORKFLOWS, workflow_capabilities
-from agent.client import FilesystemCommandClient
+from agent.client import AgentClientError, FilesystemCommandClient
 from agent.contracts import validate_contract
 from agent.media import MediaPolicy, MediaPolicyError
 from agent.paths import runtime_directory
 from agent.workflow_audit import WorkflowAuditLog
 from mcp_server.managed_marker import ManagedMarkerServer, _complete_work, _error
 from mcp_server.server import create_server as create_primary
-from providers.resolve.automatic_connection import AutomaticConnection, wait_operation
+from mcp_server.server import render_tool_error
+from providers.resolve.automatic_connection import (
+    AutomaticConnection,
+    AutomaticConnectionError,
+    wait_operation,
+)
 from providers.resolve.client import ResolveProviderClient
 from providers.resolve.lua_editing import atomic_json
 from providers.resolve.marker_supervisor import Profile
@@ -282,7 +287,31 @@ class AutomaticServer(MCPServer[Any]):
         ) and name != "resolve_verify_render_output"
         if native and name != "resolve_close_project":
             if name in primary:
-                await _complete_work(self._ready())
+                try:
+                    await _complete_work(self._ready())
+                except (
+                    AgentClientError,
+                    AutomaticConnectionError,
+                    ValueError,
+                ) as error:
+                    if name not in {
+                        "resolve_get_render_options",
+                        "resolve_prepare_render_job",
+                    }:
+                        raise
+                    result = render_tool_error(error)
+                    assert result.structured_content is not None
+                    result.structured_content.update(
+                        phase="readiness", outcome="not_dispatched",
+                        detail="Render request was not dispatched. "
+                               f"Native readiness failed: {error}",
+                    )
+                    result.content = [TextContent(
+                        type="text",
+                        text=f"{result.structured_content['code']}: "
+                             f"{result.structured_content['detail']}",
+                    )]
+                    return result
             else:
                 await _complete_work(
                     asyncio.to_thread(
