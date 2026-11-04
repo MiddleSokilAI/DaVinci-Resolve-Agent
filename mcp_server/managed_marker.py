@@ -326,7 +326,7 @@ class ManagedMarkerServer(MCPServer[Any]):
                     structured_content=result,
                 )
             except ProjectOpenError as error:
-                cause = getattr(error.__cause__, "code", None)
+                cause = error.cause_code or getattr(error.__cause__, "code", None)
                 return _error(
                     error.code, str(error),
                     cause_code=cause if isinstance(cause, str) else None,
@@ -427,7 +427,7 @@ class ManagedMarkerServer(MCPServer[Any]):
         except OriginalGenerationRequired as error:
             return _error("ORIGINAL_GENERATION_REQUIRED", str(error))
         except ProjectOpenError as error:
-            return _error(error.code, str(error))
+            return _error(error.code, str(error), cause_code=error.cause_code)
         except OperationBusy:
             return _error(
                 "OPERATION_BUSY",

@@ -10,6 +10,23 @@ bridge. It can reopen an exact saved project from a previously verified project
 open receipt, including its UUID, database and folder. It does not guess a
 project when that history is absent. An already open project is preserved.
 
+`resolve_free_connection_status` only attaches to the current project. It never
+launches Resolve or reopens a project from history. When no project is available,
+it returns a structured error with `connected=false`,
+`native_roundtrip_verified=false` and `liveness_source=local_connection_diagnostics`.
+A successful bootstrap still delegates to a new correlated native status request;
+host state and cached project identity cannot establish live connection.
+Diagnostic dispatch and uncertainty fields remain `null` when the failed layer
+cannot establish them; a status error never resolves an earlier mutation.
+
+Project-open refusals retain `cause_code` in the original receipt and its replay.
+For example, a catalogue refusal is reported with its specific library-layout
+code instead of being reduced to `UI_OPEN_REJECTED`. The catalogue accepts
+Resolve's auxiliary `Batch Renders/<job-uuid>.xml` directory after a render;
+its XML is never opened or used as project identity. Unknown or nested layouts,
+linked paths, live database sidecars and ambiguous project identities remain
+blocked. An uncertain Open is never repeated with a new key.
+
 No manual console, script launch, protocol selection or per-operation MCP
 reconnection is needed. Existing clients of the canonical filesystem queue can
 use the worker without replacing their cached tool catalogue. Client discovery

@@ -291,18 +291,28 @@ def _layout(library: Path) -> tuple[list[Path], list[dict[str, Any]]]:
             _fail("ROOT_PROJECT_DIRECTORY_REQUIRED")
         _sidecars(child / "Project.db")
         entries = _entries(child)
-        if (
-            len(entries) != 1
-            or entries[0].name != "Project.db"
-            or not entries[0].is_file()
+        database = child / "Project.db"
+        if not database.is_file() or any(
+            entry.name not in {"Project.db", "Batch Renders"} for entry in entries
         ):
             _fail("NESTED_OR_UNKNOWN_PROJECT_LAYOUT")
-        _sidecars(entries[0])
+        batch = child / "Batch Renders"
+        # Resolve adds this auxiliary directory after rendering. It is not
+        # a project folder and its XML never supplies project identity.
+        if batch.exists() and (
+            not batch.is_dir() or any(
+                not entry.is_file()
+                or not re.fullmatch(_UUID.pattern + r"\.xml", entry.name)
+                for entry in _entries(batch)
+            )
+        ):
+            _fail("NESTED_OR_UNKNOWN_PROJECT_LAYOUT")
+        _sidecars(database)
         value = child.stat()
         manifest.append(
             {"path": str(child), "mtime_ns": value.st_mtime_ns, "file_id": value.st_ino}
         )
-        files.append(entries[0])
+        files.append(database)
     return files, manifest
 
 

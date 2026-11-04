@@ -433,13 +433,33 @@ def test_pending_original_generation_cannot_migrate(fixture: Fixture) -> None:
 
 def test_definite_ui_refusal_is_terminal_for_same_key(fixture: Fixture) -> None:
     fixture.ui_error = UIError(uncertain=False)
-    with pytest.raises(ProjectOpenError, match="UI_OPEN_REJECTED"):
+    with pytest.raises(ProjectOpenError, match="UI_OPEN_REJECTED") as initial:
         fixture.open()
+    assert initial.value.cause_code == "SYNTHETIC_UI_FAILURE"
+    receipt = json.loads(fixture.receipt_path().read_text())
+    assert receipt["cause_code"] == "SYNTHETIC_UI_FAILURE"
     fixture.ui_error = None
-    with pytest.raises(ProjectOpenError, match="ORIGINAL_OPEN_REJECTED"):
+    with pytest.raises(ProjectOpenError, match="ORIGINAL_OPEN_REJECTED") as replay:
         fixture.open()
+    assert replay.value.cause_code == "SYNTHETIC_UI_FAILURE"
     assert len(fixture.opens) == 1
     assert pending_project_open(fixture.profile)["pending"] is False
+
+
+def test_legacy_rejected_receipt_keeps_known_error_without_new_open(
+    fixture: Fixture,
+) -> None:
+    fixture.ui_error = UIError(uncertain=False)
+    with pytest.raises(ProjectOpenError):
+        fixture.open()
+    path = fixture.receipt_path()
+    record = json.loads(path.read_text())
+    record.pop("cause_code")
+    atomic_json(path, record)
+    with pytest.raises(ProjectOpenError) as replay:
+        fixture.open()
+    assert replay.value.cause_code == "SYNTHETIC_UI_FAILURE"
+    assert len(fixture.opens) == 1
 
 
 def test_watcher_lock_after_ui_dispatch_does_not_escape_wait_flow(

@@ -46,10 +46,17 @@ _STATUSES = _PENDING | {"completed", "rejected"}
 class ProjectOpenError(RuntimeError):
     """A host request was refused or needs original-operation recovery."""
 
-    def __init__(self, code: str, *, uncertain: bool = False) -> None:
+    def __init__(
+        self, code: str, *, uncertain: bool = False, cause_code: str | None = None
+    ) -> None:
+        """Preserve the refusal cause across MCP and durable receipt replay."""
         self.code = code
         self.uncertain = uncertain
-        super().__init__(f"Project opening: {code}. No Open action was resubmitted.")
+        self.cause_code = cause_code
+        cause = f" Cause: {cause_code}." if cause_code else ""
+        super().__init__(
+            f"Project opening: {code}.{cause} No Open action was resubmitted."
+        )
 
 
 def _unlinked(path: Path) -> None:
@@ -170,6 +177,11 @@ def _receipt(path: Path) -> dict[str, Any]:
                 raise ValueError("Completed outcome missing or inconsistent.")
         if value["status"] == "rejected" and not isinstance(value.get("error"), str):
             raise ValueError("Rejected outcome missing.")
+        if "cause_code" in value and (
+            not isinstance(value["cause_code"], str)
+            or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", value["cause_code"])
+        ):
+            raise ValueError("Invalid refusal cause.")
         return value
     except (OSError, ValueError, RecursionError, TypeError) as error:
         raise ProjectOpenError("HOST_RECEIPT_INVALID", uncertain=True) from error
@@ -571,7 +583,10 @@ class ProjectOpenService:
                             "proof_scope": "historical_completed_receipt",
                         }
                     if receipt["status"] == "rejected":
-                        raise ProjectOpenError("ORIGINAL_OPEN_REJECTED")
+                        raise ProjectOpenError(
+                            "ORIGINAL_OPEN_REJECTED",
+                            cause_code=receipt.get("cause_code", receipt["error"]),
+                        )
                 for other_path, value in records.items():
                     if other_path != path and value["status"] in _PENDING:
                         raise ProjectOpenError(
@@ -651,8 +666,14 @@ class ProjectOpenService:
                         status="rejected",
                         error=str(getattr(error, "code", type(error).__name__))[:128],
                     )
+                    cause = str(getattr(error, "code", "UI_OPEN_REJECTED"))
+                    if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", cause):
+                        cause = "UI_OPEN_REJECTED"
+                    receipt["cause_code"] = cause
                     self._persist_rejected(path, receipt, deadline)
-                    raise ProjectOpenError("UI_OPEN_REJECTED") from error
+                    raise ProjectOpenError(
+                        "UI_OPEN_REJECTED", cause_code=cause
+                    ) from error
                 receipt["last_error"] = str(
                     getattr(error, "code", type(error).__name__)
                 )[:128]
