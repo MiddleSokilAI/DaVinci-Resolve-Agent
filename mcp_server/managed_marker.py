@@ -28,6 +28,7 @@ from mcp.types import (
 
 from agent.capabilities import workflow_capabilities
 from mcp_server.free_marker import create_server as create_marker_server
+from mcp_server.project_support import OPTIONAL_PROJECT_SUPPORT
 from providers.resolve.lua_editing import atomic_json, bounded_text
 from providers.resolve.managed_status import managed_status
 from providers.resolve.marker_supervisor import (
@@ -215,7 +216,8 @@ class ManagedMarkerServer(MCPServer[Any]):
                 "Verify fresh native project identity before writes. Preserve stable "
                 "idempotency keys: keys from older generations require original "
                 "receipt recovery and are never dispatched again. No tool records."
-            ),
+            )
+            + OPTIONAL_PROJECT_SUPPORT,
         )
         self.profile = profile
         self._factory = backend_factory

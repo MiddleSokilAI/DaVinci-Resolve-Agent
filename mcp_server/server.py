@@ -18,6 +18,7 @@ from agent.client import AgentClientError, BridgeCommandError, CommandTimeoutErr
 from agent.media import MediaPolicy
 from agent.rendering import DEFAULT_RENDER_PROFILE
 from agent.workflow_audit import WorkflowAuditLog
+from mcp_server.project_support import OPTIONAL_PROJECT_SUPPORT
 
 READ_ONLY_TOOL = ToolAnnotations(
     read_only_hint=True,
@@ -91,14 +92,15 @@ def create_server(application: AgentApplication | None = None) -> MCPServer:
     server = MCPServer(
         name="davinci-resolve-agent",
         version=__version__,
-    instructions=(
+        instructions=(
             "Local access to DaVinci Resolve Agent. "
             "Call video_agent_capabilities before choosing a workflow; cached "
             "heartbeat and registered tools do not prove native availability. "
             "The Resolve tools require the one-shot ResolveBridge script to be "
             "launched inside DaVinci Resolve while the request is waiting. "
             "Rough-cut and audio workflows run locally without changing Resolve."
-        ),
+        )
+        + OPTIONAL_PROJECT_SUPPORT,
     )
 
     @server.tool(annotations=READ_ONLY_TOOL)

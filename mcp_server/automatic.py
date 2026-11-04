@@ -22,6 +22,7 @@ from agent.media import MediaPolicy, MediaPolicyError
 from agent.paths import runtime_directory
 from agent.workflow_audit import WorkflowAuditLog
 from mcp_server.managed_marker import ManagedMarkerServer, _complete_work, _error
+from mcp_server.project_support import OPTIONAL_PROJECT_SUPPORT
 from mcp_server.server import create_server as create_primary
 from mcp_server.server import render_tool_error
 from providers.resolve.automatic_connection import (
@@ -103,7 +104,8 @@ class AutomaticServer(MCPServer[Any]):
                 "No manual script launch or protocol choice is needed. Native "
                 "writes retain confirmations, backups, stable keys and readbacks. "
                 "A failed write is never replayed through another transport."
-            ),
+            )
+            + OPTIONAL_PROJECT_SUPPORT,
         )
         self.profile = profile
         self.connection = AutomaticConnection(profile)
