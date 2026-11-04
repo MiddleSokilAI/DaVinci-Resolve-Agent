@@ -28,6 +28,10 @@ from providers.resolve.marker_transport import prepare_marker
 OLD_ID = "source-project-id"
 NEW_ID = "created-project-id"
 PROJECT_NAME = "Український проєкт & голос"
+# Exercise a lost acknowledgement after native creation, not a two-second
+# filesystem publication race on a busy Windows host.
+REQUEST_TIMEOUT_SECONDS = 30
+ACK_RELEASE_TIMEOUT_SECONDS = 3 * REQUEST_TIMEOUT_SECONDS
 
 NATIVE_PROJECT_MANAGER = """
 local function project(name,identity)
@@ -99,7 +103,9 @@ def test_marker_project_creation_survives_identity_change_and_client_restart(
         calls.append(("backup" if path.endswith(".before.drp") else "export", identity))
         if late_ack and ".ok_project_" in path:
             ack_started.set()
-            assert release_ack.wait(30), "Late acknowledgement was never released"
+            assert release_ack.wait(ACK_RELEASE_TIMEOUT_SECONDS), (
+                "Late acknowledgement was never released"
+            )
         element = ET.Element("SM_Project", DbId=identity)
         ET.SubElement(element, "ProjectName").text = name
         with zipfile.ZipFile(path, "w") as archive:
@@ -142,7 +148,7 @@ def test_marker_project_creation_survives_identity_change_and_client_restart(
             "expected_project_id": OLD_ID,
             "idempotency_key": "create-project-stdio",
             "confirm": True,
-            "timeout_seconds": 2 if late_ack else 5,
+            "timeout_seconds": REQUEST_TIMEOUT_SECONDS,
         }
         original_command: str | None = None
         created: dict[str, Any] | None = None
@@ -165,9 +171,17 @@ def test_marker_project_creation_survives_identity_change_and_client_restart(
             )
             assert rejected.is_error
             assert calls == before
-            result = await session.call_tool("resolve_lua_create_project", arguments)
+            pending_create = asyncio.create_task(
+                session.call_tool("resolve_lua_create_project", arguments)
+            )
+            if late_ack:
+                reached_ack = await asyncio.to_thread(
+                    ack_started.wait, REQUEST_TIMEOUT_SECONDS
+                )
+            result = await pending_create
             if late_ack:
                 assert result.is_error
+                assert reached_ack, "Timeout must follow native creation"
                 assert ack_started.is_set(), "Timeout must follow native creation"
                 receipts = list((root / "receipts").glob("*.json"))
                 assert len(receipts) == 1
@@ -197,7 +211,7 @@ def test_marker_project_creation_survives_identity_change_and_client_restart(
             await session.initialize()
             recovered = unpack(
                 await session.call_tool(
-                    "resolve_lua_create_project", {**arguments, "timeout_seconds": 5}
+                    "resolve_lua_create_project", arguments
                 )
             )
             assert recovered["replayed"] is (not late_ack)
@@ -217,7 +231,7 @@ def test_marker_project_creation_survives_identity_change_and_client_restart(
                 assert recovered["response_path"] == created["response_path"]
             replay = unpack(
                 await session.call_tool(
-                    "resolve_lua_create_project", {**arguments, "timeout_seconds": 5}
+                    "resolve_lua_create_project", arguments
                 )
             )
             assert replay["replayed"] is True
