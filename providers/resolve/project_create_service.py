@@ -38,7 +38,10 @@ from providers.resolve.windows_bootstrap import (
     WindowsBootstrapAdapter,
     _official_executable,
 )
-from providers.resolve.windows_project_create import WindowsProjectCreateAdapter
+from providers.resolve.windows_project_create import (
+    WindowsProjectCreateAdapter,
+    WindowsProjectCreateError,
+)
 from providers.resolve.windows_project_manager import WindowsProjectManagerAdapter
 
 _PHASES = {"dialog_pending", "create_pending", "bootstrapping", "completed"}
@@ -137,6 +140,11 @@ def creation_receipts(profile: Profile) -> dict[Path, dict[str, Any]]:
             ):
                 raise ValueError("Precreation evidence")
             binding = value.get("native_binding")
+            previous_processes = value.get("previous_dialog_processes", [])
+            if not isinstance(previous_processes, list) or len(previous_processes) > 8:
+                raise ValueError("Dialog process history")
+            for previous_process in previous_processes:
+                _token(previous_process)
             if binding is not None and (
                 not isinstance(binding, dict)
                 or set(binding) != {"runtime", "session", "generation"}
@@ -300,6 +308,7 @@ class ProjectCreateService:
         )
         deadline = time.monotonic() + timeout_seconds
         with wait_operation(self.profile, timeout_seconds):
+            begin_attempted = False
             records = creation_receipts(self.profile)
             receipt = records.get(path)
             if receipt is not None:
@@ -385,24 +394,116 @@ class ProjectCreateService:
                     },
                 )
                 atomic_json(path, receipt)
+                begin_attempted = True
                 self.ui.request(
                     "begin", process, timeout_seconds=remaining
                 )
             try:
-                return self._recover(path, receipt, deadline)
-            except ProjectCreateError:
+                return self._recover(
+                    path, receipt, deadline, begin_attempted=begin_attempted
+                )
+            except (ProjectCreateError, WindowsProjectCreateError):
                 raise
             except (OSError, ValueError, RuntimeError) as error:
                 raise ProjectCreateError(
                     "ORIGINAL_CREATION_REQUIRES_RECOVERY", uncertain=True
                 ) from error
 
+    def _restart_before_dialog(
+        self, path: Path, receipt: dict[str, Any], deadline: float,
+    ) -> None:
+        """Rebind a stopped application only before any Create was dispatched.
+
+        The unchanged library proves no project was added. A live replacement
+        process is never adopted, and later phases keep their original binding.
+        """
+        if receipt["phase"] != "dialog_pending":
+            raise ProjectCreateError(
+                "ORIGINAL_CREATION_REQUIRES_RECOVERY", uncertain=True
+            )
+        host = self.host.inspect()
+        if (
+            host.get("state") != "resolve_not_running"
+            or host.get("process") is not None
+        ):
+            return
+        if (
+            receipt.get("dialog") is not None
+            or receipt.get("native_binding") is not None
+        ):
+            raise ProjectCreateError(
+                "ORIGINAL_CREATION_REQUIRES_RECOVERY", uncertain=True
+            )
+        catalogue = self.catalogue()
+        if any(
+            catalogue[field] != receipt["before"][field]
+            for field in ("database", "library_path", "projects")
+        ):
+            raise ProjectCreateError("PRECREATE_LIBRARY_CHANGED", uncertain=True)
+        history = receipt.get("previous_dialog_processes", [])
+        if len(history) >= 8:
+            raise ProjectCreateError("DIALOG_RESTART_LIMIT", uncertain=True)
+        self.supervisor_factory(self.profile)._audit_rotation()
+        # The caller already owns operation.lock. Use the same nonblocking
+        # connection gate as first startup; never reverse-wait for that lock.
+        try:
+            with _lock(self.profile, "connection.lock"):
+                process = self._manager(deadline)
+        except OperationBusy as error:
+            raise ProjectCreateError("PROJECT_STARTUP_BUSY") from error
+        manager = self.manager.inspect()
+        if (
+            manager.get("state") != "project_manager"
+            or manager.get("eligible") is not True
+            or _token(manager.get("process")) != _token(process)
+        ):
+            raise ProjectCreateError("PROJECT_MANAGER_REQUIRED")
+        receipt["previous_dialog_processes"] = [*history, receipt["process"]]
+        receipt["process"] = process
+        atomic_json(path, receipt)
+
+    def _restore_empty_dialog(self, receipt: dict[str, Any], deadline: float) -> None:
+        """Restore a proven empty dialog state; this phase has never sent Create.
+
+        Only the original process/window and unchanged selected library can
+        resume. Later create_pending/bootstrapping phases never enter this path.
+        The fixed Begin driver itself refuses any dialog appearing concurrently.
+        """
+        process = receipt["process"]
+        host = self.host.inspect()
+        current = host.get("process")
+        if (
+            host.get("state") != "project_manager"
+            or not isinstance(current, dict)
+            or _token(current) != _token(process)
+            or current.get("window_handle") != process["window_handle"]
+        ):
+            raise ProjectCreateError("ORIGINAL_MANAGER_CHANGED", uncertain=True)
+        manager = self.manager.inspect()
+        if (
+            manager.get("state") != "project_manager"
+            or manager.get("eligible") is not True
+            or _token(manager.get("process")) != _token(process)
+        ):
+            raise ProjectCreateError("ORIGINAL_MANAGER_CHANGED", uncertain=True)
+        catalogue = self.catalogue()
+        if any(
+            catalogue[field] != receipt["before"][field]
+            for field in ("database", "library_path", "projects")
+        ):
+            raise ProjectCreateError("PRECREATE_LIBRARY_CHANGED", uncertain=True)
+        self.ui.request("begin", process, timeout_seconds=self._remaining(deadline))
+
     def _recover(
         self,
         path: Path,
         receipt: dict[str, Any],
         deadline: float,
+        *,
+        begin_attempted: bool = False,
     ) -> dict[str, Any]:
+        if receipt["phase"] == "dialog_pending" and not begin_attempted:
+            self._restart_before_dialog(path, receipt, deadline)
         process = receipt["process"]
         while receipt["phase"] == "dialog_pending":
             dialog = self.ui.request(
@@ -411,6 +512,11 @@ class ProjectCreateService:
                 timeout_seconds=self._remaining(deadline),
             ).get("dialog")
             if dialog is None:
+                if not begin_attempted:
+                    # Receipt proves Create was never dispatched; absence was
+                    # read back. Restore Begin once, never blindly in a loop.
+                    begin_attempted = True
+                    self._restore_empty_dialog(receipt, deadline)
                 time.sleep(0.1)
                 continue
             current_catalogue = self.catalogue()

@@ -31,6 +31,7 @@ from providers.resolve.project_open_service import (
     ProjectOpenService,
     pending_project_open,
 )
+from providers.resolve.windows_project_create import WindowsProjectCreateError
 
 PROJECT = {"id": "11111111-2222-4333-8444-555555555555", "name": "Новий проєкт"}
 DATABASE = {"DbType": "Disk", "DbName": "Local Database"}
@@ -62,6 +63,7 @@ class Fixture:
         self.lost_bootstrap_ack = False
         self.persistence_fail = False
         self.dialog_waits = 0
+        self.dialog_present = False
         self.existing: list[dict[str, str]] = []
 
     def inspect(self) -> dict[str, Any]:
@@ -84,9 +86,13 @@ class Fixture:
     def request(self, operation: str, process: Any, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(operation)
         assert pending_project_open(self.profile)["pending"] is True
-        if operation == "begin" and self.lost_begin_ack:
-            raise RuntimeError("Lost dialog acknowledgment")
+        if operation == "begin":
+            self.dialog_present = True
+            if self.lost_begin_ack:
+                raise RuntimeError("Lost dialog acknowledgment")
         if operation == "inspect_dialog":
+            if not self.dialog_present:
+                return {"dialog": None}
             if self.dialog_waits:
                 self.dialog_waits -= 1
                 return {"dialog": None}
@@ -94,6 +100,7 @@ class Fixture:
         if operation == "create":
             assert kwargs["name"] == PROJECT["name"]
             self.created = True
+            self.dialog_present = False
             self.state = "project_window"
             if self.lost_create_ack:
                 raise RuntimeError("Lost Create acknowledgment")
@@ -216,6 +223,155 @@ def test_lost_begin_ack_recovers_dialog_without_new_project_again(
     f.lost_begin_ack = False
     assert f.create()["persisted"]
     assert f.calls.count("begin") == 1
+
+
+def test_original_key_recovers_absent_dialog_before_any_create(
+    tmp_path: Path,
+) -> None:
+    f = Fixture(tmp_path)
+    request = f.request
+    rejected = False
+
+    def reject_once(operation: str, process: Any, **kwargs: Any) -> dict[str, Any]:
+        nonlocal rejected
+        if operation == "begin" and not rejected:
+            rejected = True
+            f.calls.append("begin_rejected")
+            raise RuntimeError("MANAGER_BLOCKED before Invoke")
+        return request(operation, process, **kwargs)
+
+    f.request = reject_once  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="MANAGER_BLOCKED"):
+        f.create()
+    assert next(iter(creation_receipts(f.profile).values()))["phase"] == (
+        "dialog_pending"
+    )
+    assert not f.created and not f.dialog_present
+    result = f.create(timeout_seconds=1)
+    assert result["persisted"] is True
+    assert f.calls.count("begin") == f.calls.count("create") == 1
+    assert f.create()["replayed"] is True
+    assert f.calls.count("create") == 1
+
+
+@pytest.mark.parametrize("change", ["library", "process", "window", "open_project"])
+def test_missing_dialog_recovery_refuses_changed_original_context(
+    tmp_path: Path, change: str,
+) -> None:
+    f = Fixture(tmp_path)
+    f.lost_begin_ack = True
+    with pytest.raises(RuntimeError):
+        f.create()
+    f.lost_begin_ack = False
+    f.dialog_present = False
+    if change == "library":
+        f.existing = [{"id": "22222222-2222-4333-8444-555555555555", "name": "Other"}]
+    elif change == "process":
+        f.process = {**f.process, "creation_time": "638999000000000001"}
+    elif change == "window":
+        f.process = {**f.process, "window_handle": 999}
+    else:
+        f.state = "project_window"
+    before = list(f.calls)
+    with pytest.raises(ProjectCreateError, match="MANAGER_CHANGED|LIBRARY_CHANGED"):
+        f.create()
+    assert f.calls == [*before, "inspect_dialog"]
+    assert f.calls.count("create") == 0
+
+
+def test_original_precreate_key_restarts_stopped_process_without_duplicate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    f = Fixture(tmp_path)
+    f.lost_begin_ack = True
+    with pytest.raises(RuntimeError):
+        f.create()
+    original = dict(f.process)
+    f.lost_begin_ack = False
+    f.dialog_present = False
+    f.state = "resolve_not_running"
+    executable = tmp_path / "Resolve.exe"
+    executable.touch()
+    monkeypatch.setattr(
+        creation_module, "_official_executable", lambda: str(executable)
+    )
+    launches: list[Any] = []
+
+    def launch(*args: Any, **kwargs: Any) -> Any:
+        launches.append(args)
+        f.process = {**original, "pid": 124, "creation_time": "638999000000000001",
+                     "window_handle": 457}
+        f.state = "project_manager"
+        return SimpleNamespace(pid=124, poll=lambda: None)
+
+    monkeypatch.setattr("subprocess.Popen", launch)
+    result = f.create()
+    assert result["persisted"] is True
+    receipt = next(iter(creation_receipts(f.profile).values()))
+    assert receipt["previous_dialog_processes"] == [original]
+    assert receipt["process"] == f.process
+    assert len(launches) == f.calls.count("create") == 1
+    assert f.create()["replayed"] is True
+    assert len(launches) == f.calls.count("create") == 1
+
+
+def test_recovery_keeps_fixed_driver_refusal_detail_and_dispatch_flag(
+    tmp_path: Path,
+) -> None:
+    f = Fixture(tmp_path)
+    f.lost_begin_ack = True
+    with pytest.raises(RuntimeError):
+        f.create()
+    f.lost_begin_ack = False
+    f.dialog_present = False
+    original_request = f.request
+
+    def refuse(operation: str, process: Any, **kwargs: Any) -> dict[str, Any]:
+        if operation == "begin":
+            raise WindowsProjectCreateError("MANAGER_BLOCKED", uncertain=False)
+        return original_request(operation, process, **kwargs)
+
+    f.request = refuse  # type: ignore[method-assign]
+    with pytest.raises(WindowsProjectCreateError, match="MANAGER_BLOCKED") as failure:
+        f.create()
+    assert failure.value.uncertain is False
+    assert f.calls.count("create") == 0
+    f.request = original_request  # type: ignore[method-assign]
+    assert f.create()["persisted"] is True
+    assert f.calls.count("create") == 1
+    assert f.create()["replayed"] is True
+    assert f.calls.count("create") == 1
+
+
+def test_precreate_restart_refuses_changed_library_before_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    f = Fixture(tmp_path)
+    f.lost_begin_ack = True
+    with pytest.raises(RuntimeError):
+        f.create()
+    f.lost_begin_ack = False
+    f.dialog_present = False
+    f.state = "resolve_not_running"
+    f.existing = [{"id": "22222222-2222-4333-8444-555555555555", "name": "Other"}]
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **k: pytest.fail("Launched"))
+    with pytest.raises(ProjectCreateError, match="PRECREATE_LIBRARY_CHANGED"):
+        f.create()
+    assert not f.created
+
+
+def test_stopped_process_after_create_dispatch_never_restarts_or_creates_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    f = Fixture(tmp_path)
+    f.lost_create_ack = True
+    with pytest.raises(ProjectCreateError):
+        f.create()
+    f.state = "resolve_not_running"
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **k: pytest.fail("Launched"))
+    with pytest.raises(ProjectCreateError, match="ORIGINAL_PROCESS_CHANGED"):
+        f.create()
+    assert f.calls.count("create") == 1
 
 
 def test_changed_process_and_key_conflict_never_dispatch_again(tmp_path: Path) -> None:

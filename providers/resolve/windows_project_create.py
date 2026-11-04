@@ -13,6 +13,15 @@ from typing import Any
 from providers.resolve.windows_bootstrap import _unique_object, _validate_process
 
 
+class WindowsProjectCreateError(RuntimeError):
+    """Retain a fixed driver's refusal and whether Invoke may have run."""
+
+    def __init__(self, detail: str, *, uncertain: bool) -> None:
+        self.code = "PROJECT_CREATE_UI_FAILED"
+        self.uncertain = uncertain
+        super().__init__(f"Fixed project creation adapter: {detail}")
+
+
 class WindowsProjectCreateAdapter:
     """Invoke one fixed button and set one fixed name field, without focus."""
 
@@ -69,6 +78,19 @@ class WindowsProjectCreateAdapter:
         if len(response.stdout) > 8192:
             raise RuntimeError("CREATE_UI_RESPONSE_BOUND")
         result = json.loads(response.stdout, object_pairs_hook=_unique_object)
+        if (
+            response.returncode != 0
+            and isinstance(result, dict)
+            and set(result) == {"ok", "code", "detail", "dispatch_started"}
+            and result["ok"] is False
+            and result["code"] == "PROJECT_CREATE_UI_FAILED"
+            and isinstance(result["detail"], str)
+            and 1 <= len(result["detail"]) <= 1024
+            and type(result["dispatch_started"]) is bool
+        ):
+            raise WindowsProjectCreateError(
+                result["detail"], uncertain=result["dispatch_started"]
+            )
         if (
             response.returncode != 0
             or not isinstance(result, dict)
