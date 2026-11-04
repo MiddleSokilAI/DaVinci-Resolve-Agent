@@ -225,7 +225,7 @@ def test_compact_host_lease_is_bounded_and_checksummed() -> None:
     assert h.reader.is_alive() is False
 
 
-def prepare_runtime(root: Path) -> str:
+def prepare_runtime(root: Path, creation_context: Any = None) -> str:
     prepare(root)
     metadata = json.loads((root / "session.json").read_text(encoding="utf-8"))
     metadata.update(
@@ -235,6 +235,8 @@ def prepare_runtime(root: Path) -> str:
         max_payload_bytes=4096,
         lease_seconds=5,
     )
+    if creation_context is not None:
+        metadata["creation_context"] = creation_context
     (root / "session.json").write_text(json.dumps(metadata), encoding="utf-8")
     bridge = root / "bridge.lua"
     # Keep generated session/source identity in sync for the test's stable nonce.
@@ -281,6 +283,79 @@ def test_bundle_without_compiler_or_loaders_dispatches_once_and_exits(
     assert h.lua.globals().dofile is None
     with pytest.raises(LuaError, match="MARKER_SESSION_ALREADY_CONSUMED"):
         h.lua.execute(script)
+
+
+@pytest.mark.parametrize(
+    "fault", [None, "name", "database", "folder", "old_id", "save", "changed"]
+)
+def test_creation_saves_only_bound_new_project_before_first_export(
+    tmp_path: Path, fault: str | None,
+) -> None:
+    project_id = "11111111-2222-4333-8444-555555555555"
+    context = {
+        "name": "Український проєкт",
+        "database": {"DbType": "Disk", "DbName": "Local Database"},
+        "excluded_project_ids": [project_id] if fault == "old_id" else [],
+    }
+    root = tmp_path / "runtime"
+    script = prepare_runtime(root, context)
+    h = Harness(root.as_posix())
+    calls: list[str] = []
+
+    def save() -> bool:
+        calls.append("save")
+        return fault != "save"
+
+    def export(path: str) -> bool:
+        assert calls and calls[0] == "save", "Unsaved new project cannot export"
+        calls.append("export")
+        return h.export(path)
+
+    h.lua.globals().py_save = save
+    h.lua.globals().py_export = export
+    h.lua.globals().test_name = "Other" if fault == "name" else context["name"]
+    h.lua.globals().test_database = "Other" if fault == "database" else "Local Database"
+    h.lua.globals().test_folder = "Other" if fault == "folder" else ""
+    h.lua.globals().test_changed = fault == "changed"
+    h.lua.execute("""
+        local changed=false
+        local project={GetName=function() return changed and 'Other' or test_name end,
+            GetUniqueId=function() return '11111111-2222-4333-8444-555555555555' end}
+        local pm={GetCurrentProject=function() return project end,
+            GetCurrentDatabase=function()
+                return {DbType='Disk',DbName=test_database} end,
+            GetCurrentFolder=function() return test_folder end,
+            SaveProject=function()
+                local result=py_save(); changed=test_changed; return result end,
+            ExportProject=function(self,name,path) return py_export(path) end}
+        resolve={GetProjectManager=function() return pm end}
+    """)
+    h.lua.globals().ResolveAgentLuaRunning = True
+    h.lua.execute(script)
+    assert calls == []
+    h.lua.globals().ResolveAgentLuaRunning = None
+    h.lua.execute(script)
+    if fault is None:
+        assert calls.count("save") == 1
+        assert h.exports[0].endswith("marker-session-consumed.drp")
+        with pytest.raises(LuaError, match="MARKER_SESSION_ALREADY_CONSUMED"):
+            h.lua.execute(script)
+        assert calls.count("save") == 1
+    else:
+        assert h.exports == []
+        assert calls == (["save"] if fault in {"save", "changed"} else [])
+
+
+@pytest.mark.parametrize("context", [
+    {}, {"name": "X"},
+    {"name": "X", "database": {"DbType": "Disk", "DbName": "Local Database"},
+     "excluded_project_ids": ["invalid"]},
+])
+def test_invalid_creation_save_policy_is_not_bundled(
+    tmp_path: Path, context: Any,
+) -> None:
+    with pytest.raises(ValueError, match="creation bootstrap context"):
+        prepare_runtime(tmp_path / "runtime", context)
 
 
 def test_stop_acknowledged_through_native_export(tmp_path: Path) -> None:

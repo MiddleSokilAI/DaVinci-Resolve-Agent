@@ -176,8 +176,18 @@ class Fixture:
 def test_creates_once_and_replay_does_not_inspect_or_open(tmp_path: Path) -> None:
     f = Fixture(tmp_path)
     f.dialog_waits = 2
+    f.existing = [{"id": "99999999-2222-4333-8444-555555555555", "name": "Existing"}]
     result = f.create()
     assert result["project"] == PROJECT and result["persisted"] is True
+    active = read_active(f.profile)
+    assert active is not None
+    metadata = json.loads(
+        (Path(active["runtime"]) / "session.json").read_text(encoding="utf-8")
+    )
+    assert metadata["creation_context"] == {
+        "name": PROJECT["name"], "database": DATABASE,
+        "excluded_project_ids": [f.existing[0]["id"]],
+    }
     assert not pending_project_open(f.profile)["pending"]
     assert (
         f.calls.count("begin")
@@ -282,6 +292,30 @@ def test_definite_bridge_refusal_does_not_retry_in_another_project(
     with pytest.raises(ProjectCreateError, match="CREATED_PROJECT_WINDOW_CHANGED"):
         f.create()
     assert f.calls == before
+
+
+@pytest.mark.parametrize("evidence", ["marker-session-consumed.drp", "stopped.json"])
+def test_definite_bridge_refusal_keeps_prior_native_start_owned(
+    tmp_path: Path, evidence: str,
+) -> None:
+    f = Fixture(tmp_path)
+
+    def already_started(root: Path, process: Any, **kwargs: Any) -> None:
+        f.calls.append("bootstrap")
+        (root / evidence).write_bytes(b"Earlier native startup evidence")
+        raise WindowsBootstrapError("SESSION_ALREADY_CONSUMED", uncertain=False)
+
+    f.invoke_managed_marker = already_started  # type: ignore[method-assign]
+    with pytest.raises(ProjectCreateError) as failure:
+        f.create()
+    assert failure.value.uncertain is True
+    assert failure.value.bridge_dispatch_uncertain is False
+    active = read_active(f.profile)
+    assert active is not None and active["dispatch_started"] is True
+    # The next call can verify the original native context; the raising adapter
+    # would make this fail if it attempted to bootstrap again.
+    assert f.create()["persisted"] is True
+    assert f.calls.count("create") == f.calls.count("bootstrap") == 1
 
 
 @pytest.mark.parametrize("uncertain", [False, True])

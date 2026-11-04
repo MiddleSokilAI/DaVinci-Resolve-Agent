@@ -308,6 +308,9 @@ class WindowsBootstrapAdapter:
 
         A timeout or malformed response is uncertain: the supervisor must inspect
         native evidence instead of invoking again. This method does not retry.
+        Background mode forbids forced focus, window restoration and input
+        synthesis. Fixed ExpandCollapse/MSAA menu actions may activate Resolve
+        through its own accessibility provider.
         """
         self._available()
         process = _validate_process(process, eligible=True)

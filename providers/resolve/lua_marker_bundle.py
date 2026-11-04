@@ -21,10 +21,60 @@ def _replace_once(source: str, anchor: str, replacement: str) -> str:
     return source.replace(anchor, replacement, 1)
 
 
+def _creation_save(metadata: dict[str, object]) -> str:
+    """Save only the receipt-bound new project, never an ordinary attachment."""
+    context = metadata.get("creation_context")
+    if context is None:
+        return ""
+    if not isinstance(context, dict) or set(context) != {
+        "name", "database", "excluded_project_ids"
+    }:
+        raise ValueError("Invalid creation bootstrap context")
+    name, database, excluded = (
+        context["name"], context["database"], context["excluded_project_ids"]
+    )
+    if (
+        not isinstance(name, str) or not 1 <= len(name) <= 128
+        or name != name.strip() or name.endswith(".")
+        or re.search(r'[\x00-\x1f\x7f<>:"/\\|?*]', name)
+        or not isinstance(database, dict) or set(database) != {"DbType", "DbName"}
+        or database["DbType"] != "Disk"
+        or not isinstance(database["DbName"], str)
+        or not 1 <= len(database["DbName"]) <= 128
+        or not isinstance(excluded, list) or len(excluded) > 128
+        or any(not isinstance(value, str) or not re.fullmatch(
+            r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", value
+        ) for value in excluded)
+        or len(set(excluded)) != len(excluded)
+    ):
+        raise ValueError("Invalid creation bootstrap context")
+    return (
+        "    local creation=" + lua_value(context) + "\n"
+        "    local function verify_creation()\n"
+        "        local db=assert(pm:GetCurrentDatabase(),'CREATE_DATABASE_REQUIRED')\n"
+        "        assert(db.DbType==creation.database.DbType and "
+        "db.DbName==creation.database.DbName and db.IpAddress==nil,"
+        "'CREATE_DATABASE_CHANGED')\n"
+        "        assert(pm:GetCurrentFolder()=='','CREATE_FOLDER_CHANGED')\n"
+        "        local current=assert(pm:GetCurrentProject(),"
+        "'CREATE_PROJECT_REQUIRED')\n"
+        "        assert(current:GetName()==creation.name and "
+        "current:GetUniqueId()==marker_project_id,'CREATE_PROJECT_CHANGED')\n"
+        "        for _,id in ipairs(creation.excluded_project_ids) do\n"
+        "            assert(id~=marker_project_id,'CREATE_OLD_PROJECT_REFUSED')\n"
+        "        end\n"
+        "    end\n"
+        "    verify_creation()\n"
+        "    assert(pm:SaveProject()==true,'CREATE_INITIAL_SAVE_FAILED')\n"
+        "    verify_creation()\n"
+    )
+
+
 def build_marker_bridge(root: Path) -> str:
     """Bundle one prepared marker runtime without writing or launching it."""
     root = root.resolve()
     metadata = json.loads((root / "session.json").read_text(encoding="utf-8"))
+    creation_save = _creation_save(metadata)
     session = metadata.get("session")
     lease = metadata.get("lease_seconds", 600)
     limit = metadata.get("max_payload_bytes", 4096)
@@ -193,7 +243,8 @@ end
         "_G.ResolveAgentMarkerSession=session\n"
         "local succeeded,reason=pcall(function()\n"
         "    assert(not bmd.fileexists(marker),'MARKER_SESSION_ALREADY_CONSUMED')\n"
-        "    assert(pm:ExportProject(project:GetName(),marker,false),"
+        + creation_save
+        + "    assert(pm:ExportProject(project:GetName(),marker,false),"
         "'MARKER_CONSUMPTION_EXPORT_FAILED')\n"
         "    assert(bmd.fileexists(marker),'MARKER_CONSUMPTION_EXPORT_MISSING')\n"
         "    return load_module(root..'/bridge.lua')\nend)\n"

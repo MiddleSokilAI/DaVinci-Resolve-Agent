@@ -549,6 +549,7 @@ def prepare_marker(
     lease_seconds: int = DEFAULT_LEASE_SECONDS,
     max_payload_bytes: int = MAX_PAYLOAD_BYTES,
     sdk_runtime_root: Path | None = None,
+    creation_context: dict[str, Any] | None = None,
 ) -> Path:
     """Prepare a new protocol-4 marker session and its fixed self-contained script."""
     _lease_limit(lease_seconds)
@@ -567,6 +568,8 @@ def prepare_marker(
         lease_seconds=lease_seconds,
         poll_interval_seconds=0.25,
     )
+    if creation_context is not None:
+        metadata["creation_context"] = creation_context
     if sdk_runtime_root is not None:
         if not sdk_runtime_root.is_absolute() or sdk_runtime_root.is_symlink():
             raise ValueError("SDK runtime must be absolute and unlinked.")

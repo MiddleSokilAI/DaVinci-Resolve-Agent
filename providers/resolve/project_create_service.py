@@ -569,7 +569,14 @@ class ProjectCreateService:
             receipt["phase"] = "bootstrapping"
             atomic_json(path, receipt)
             active = supervisor._new(
-                current, Path(active["runtime"]) if active else None
+                current, Path(active["runtime"]) if active else None,
+                creation_context={
+                    "name": receipt["name"],
+                    "database": receipt["before"]["database"],
+                    "excluded_project_ids": [
+                        project["id"] for project in receipt["before"]["projects"]
+                    ],
+                },
             )
             receipt["native_binding"] = ProjectOpenService._binding(active)
             atomic_json(path, receipt)
@@ -597,7 +604,13 @@ class ProjectCreateService:
                     self.host.invoke_managed_marker(root, current, background_only=True)
                 except WindowsBootstrapError as error:
                     active["last_error"] = error.code
-                    if error.uncertain is False:
+                    native_start_observed = any(
+                        evidence.exists() or evidence.is_symlink()
+                        for evidence in (
+                            root / "marker-session-consumed.drp", root / "stopped.json"
+                        )
+                    )
+                    if error.uncertain is False and not native_start_observed:
                         # This attempt definitely did not invoke the bridge.
                         # Keep the original Create receipt/generation; only its
                         # bridge startup may resume on the next same-key call.
