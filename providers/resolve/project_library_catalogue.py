@@ -273,7 +273,7 @@ def _layout(library: Path) -> tuple[list[Path], list[dict[str, Any]]]:
         _fail("ONLY_GUEST_USER_SUPPORTED")
     projects = users / "guest/Projects"
     children = _entries(projects)
-    if not 1 <= len(children) <= MAX_PROJECTS:
+    if len(children) > MAX_PROJECTS:
         _fail("PROJECT_COUNT_BOUND_EXCEEDED")
     files: list[Path] = []
     manifest: list[dict[str, Any]] = []
@@ -300,7 +300,8 @@ def _layout(library: Path) -> tuple[list[Path], list[dict[str, Any]]]:
         # Resolve adds this auxiliary directory after rendering. It is not
         # a project folder and its XML never supplies project identity.
         if batch.exists() and (
-            not batch.is_dir() or any(
+            not batch.is_dir()
+            or any(
                 not entry.is_file()
                 or not re.fullmatch(_UUID.pattern + r"\.xml", entry.name)
                 for entry in _entries(batch)
@@ -374,31 +375,23 @@ def _project(copy: Path) -> dict[str, str]:
         connection.close()
 
 
-def verify_project_library_target(
+def inspect_project_library(
     *,
     expected_database: dict[str, Any],
-    project_name: str,
-    expected_project_id: str,
     registry_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Verify a unique root candidate from stable private copies, without UI.
+    """Inspect a bounded root catalogue from stable private copies, without UI.
 
     Production callers leave registry_path unset. The override exists for local
     fixture tests; public MCP/UI entrypoints must not expose arbitrary registries.
     Catalogue identity is only a guard and never proves a selected UI item.
     """
-    arguments = validate_project_context_request(
-        {
-            "expected_database": expected_database,
-            "expected_folder": "",
-            "expected_project_name": project_name,
-        },
-        expected_project_id,
-    )
-    if arguments["expected_database"]["DbType"] != "Disk":
+    if (
+        set(expected_database) != {"DbType", "DbName"}
+        or expected_database["DbType"] != "Disk"
+    ):
         _fail("ONLY_DISK_LIBRARY_SUPPORTED")
-    if not _UUID.fullmatch(expected_project_id):
-        _fail("CANONICAL_PROJECT_UUID_REQUIRED")
+    bounded_text(expected_database["DbName"], "Database name")
     registry_path = _registry_path() if registry_path is None else Path(registry_path)
     override = registry_path != _registry_path() if os.name == "nt" else True
     try:
@@ -441,13 +434,6 @@ def verify_project_library_target(
         ]
         if len(set(names)) != len(names):
             _fail("AMBIGUOUS_PROJECT_NAMES")
-        query = unicodedata.normalize("NFKC", project_name).casefold()
-        candidates = [
-            item for item, name in zip(projects, names, strict=True) if query in name
-        ]
-        target = {"id": expected_project_id, "name": project_name}
-        if candidates != [target]:
-            _fail("TARGET_NOT_UNIQUE_EXACT_ROOT_PROJECT")
         final_registry, final_registry_proof = _stable_bytes(
             registry_path, MAX_REGISTRY_BYTES
         )
@@ -475,18 +461,16 @@ def verify_project_library_target(
                 sort_keys=True,
             ).encode("utf-8")
         ).hexdigest()
-        target_index = projects.index(target)
         return {
             "verification": "readonly_project_library_copy_v1",
             "schema_profile": "resolve-disk-project-v17-observed-21.1.2",
-            "database": arguments["expected_database"],
+            "database": dict(expected_database),
             "folder": "",
-            "project": target,
+            "projects": projects,
             "registry_path": str(registry_path),
             "library_path": str(library),
-            "project_database_path": str(paths[target_index]),
+            "project_database_paths": [str(path) for path in paths],
             "project_count": len(projects),
-            "substring_match_count": 1,
             "catalogue_signature": signature,
             "sources": sources,
             "selected_library_registered": True,
@@ -497,3 +481,55 @@ def verify_project_library_target(
         }
     except (OSError, UnicodeError, ValueError) as error:
         raise ProjectLibraryCatalogueError("LIBRARY_SOURCE_UNREADABLE") from error
+
+
+def selected_project_library() -> dict[str, Any]:
+    """Inspect the sole selected local library using its fixed Resolve registry."""
+    path = _registry_path()
+    data, _ = _stable_bytes(path, MAX_REGISTRY_BYTES)
+    try:
+        name = data.decode("utf-8-sig").splitlines()[0].split(":")[0]
+    except (UnicodeError, IndexError) as error:
+        raise ProjectLibraryCatalogueError("REGISTRY_FORMAT_UNSUPPORTED") from error
+    return inspect_project_library(expected_database={"DbType": "Disk", "DbName": name})
+
+
+def verify_project_library_target(
+    *,
+    expected_database: dict[str, Any],
+    project_name: str,
+    expected_project_id: str,
+    registry_path: Path | None = None,
+) -> dict[str, Any]:
+    """Verify one exact root target; catalogue evidence never proves UI selection."""
+    validate_project_context_request(
+        {
+            "expected_database": expected_database,
+            "expected_folder": "",
+            "expected_project_name": project_name,
+        },
+        expected_project_id,
+    )
+    if not _UUID.fullmatch(expected_project_id):
+        _fail("CANONICAL_PROJECT_UUID_REQUIRED")
+    report = inspect_project_library(
+        expected_database=expected_database,
+        registry_path=registry_path,
+    )
+    query = unicodedata.normalize("NFKC", project_name).casefold()
+    projects = report.pop("projects")
+    candidates = [
+        item
+        for item in projects
+        if query in unicodedata.normalize("NFKC", item["name"]).casefold()
+    ]
+    target = {"id": expected_project_id, "name": project_name}
+    if candidates != [target]:
+        _fail("TARGET_NOT_UNIQUE_EXACT_ROOT_PROJECT")
+    paths = report.pop("project_database_paths")
+    return {
+        **report,
+        "project": target,
+        "substring_match_count": 1,
+        "project_database_path": paths[projects.index(target)],
+    }

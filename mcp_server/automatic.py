@@ -159,9 +159,7 @@ class AutomaticServer(MCPServer[Any]):
         tools.update({tool.name: tool for tool in await self.primary.list_tools()})
         return list(tools.values())
 
-    async def _connection_status(
-        self, arguments: dict[str, Any], context: Any
-    ) -> Any:
+    async def _connection_status(self, arguments: dict[str, Any], context: Any) -> Any:
         """Attach to the current project without opening a historical target.
 
         The backend must still perform its correlated native status request;
@@ -177,16 +175,20 @@ class AutomaticServer(MCPServer[Any]):
             return _error("INVALID_ARGUMENTS", "timeout_seconds must be in (0, 600].")
         backend_called = False
         try:
-            await _complete_work(asyncio.to_thread(
-                self.connection.ensure,
-                timeout=timeout,
-                require_sdk_channel=False,
-                allow_project_open=False,
-            ))
+            await _complete_work(
+                asyncio.to_thread(
+                    self.connection.ensure,
+                    timeout=timeout,
+                    require_sdk_channel=False,
+                    allow_project_open=False,
+                )
+            )
             backend_called = True
-            return await _complete_work(self.marker.call_tool(
-                "resolve_free_connection_status", arguments, context
-            ))
+            return await _complete_work(
+                self.marker.call_tool(
+                    "resolve_free_connection_status", arguments, context
+                )
+            )
         except (OSError, RuntimeError, ValueError) as error:
             code = str(getattr(error, "code", "NATIVE_CONNECTION_FAILED"))
             cause = (
@@ -213,12 +215,69 @@ class AutomaticServer(MCPServer[Any]):
                 is_error=True,
             )
 
-    async def _ready(self) -> None:
+    async def _create_project(self, arguments: dict[str, Any], context: Any) -> Any:
+        """Route cold creation before historical-project readiness."""
+        from providers.resolve.project_create_service import (
+            ProjectCreateService,
+            validate_creation,
+        )
+
+        service = ProjectCreateService(self.profile)
+        key = arguments.get("idempotency_key")
+        creation_attempted = False
+        try:
+            # Validate the public native path too; missing cold keys are rejected
+            # before a New Project invocation, but remain optional for warm SDK.
+            validate_creation(
+                arguments.get("name"),
+                arguments.get("confirm_create"),
+                key if key is not None else "warm-path-validation",
+                arguments.get("timeout_seconds", 30),
+            )
+            owned = await asyncio.to_thread(service.owns_key, key)
+            host = None if owned else await asyncio.to_thread(service.host.inspect)
+            if owned or host and host.get("state") == "project_manager":
+                if not key:
+                    return _error(
+                        "IDEMPOTENCY_KEY_REQUIRED",
+                        "Cold creation requires a stable key.",
+                    )
+                creation_attempted = True
+                result = await _complete_work(
+                    asyncio.to_thread(service.create, **arguments)
+                )
+                return CallToolResult(
+                    content=[TextContent(type="text", text=json.dumps(result))],
+                    structured_content=result,
+                )
+            await _complete_work(self._ready(allow_project_open=False))
+            creation_attempted = True
+            return await _complete_work(
+                self.primary.call_tool("resolve_create_project", arguments, context)
+            )
+        except (OSError, ValueError, RuntimeError) as error:
+            evidence = {
+                "code": str(getattr(error, "code", "PROJECT_CREATION_FAILED")),
+                "detail": str(error),
+                "uncertain": getattr(error, "uncertain", creation_attempted),
+                "project_open_requested": False,
+            }
+            return CallToolResult(
+                content=[TextContent(type="text", text=json.dumps(evidence))],
+                structured_content=evidence,
+                is_error=True,
+            )
+
+    async def _ready(self, *, allow_project_open: bool = True) -> None:
         # Bootstrap precedes command creation, so the native timeout/expiry
         # covers SDK work rather than application launch and project opening.
         client = FilesystemCommandClient(self.profile.runtime_base)
         for attempt in range(2):
-            await asyncio.to_thread(self.connection.ensure, require_sdk_channel=False)
+            await asyncio.to_thread(
+                self.connection.ensure,
+                require_sdk_channel=False,
+                allow_project_open=allow_project_open,
+            )
             try:
                 await asyncio.to_thread(
                     client.request,
@@ -239,12 +298,14 @@ class AutomaticServer(MCPServer[Any]):
         connection_error = None
         if verify:
             try:
-                await self._ready()
+                await self._ready(allow_project_open=False)
             except (OSError, RuntimeError, ValueError) as error:
                 connection_error = getattr(error, "code", "automatic_connection_failed")
                 arguments = {**arguments, "verify_connection": False}
                 if connection_error in {
-                    "PROJECT_CLOSED", "PROJECT_CLOSE_REQUIRES_RECOVERY"
+                    "PROJECT_CLOSED",
+                    "PROJECT_CLOSE_REQUIRES_RECOVERY",
+                    "PROJECT_CREATION_REQUIRES_RECOVERY",
                 }:
                     marker_arguments = {**marker_arguments, "verify_connection": False}
         tools = await self.list_tools()
@@ -318,7 +379,8 @@ class AutomaticServer(MCPServer[Any]):
         except ValidationError as error:
             return _error("INVALID_ARGUMENTS", error.message)
         if arguments.get("output_directory") is not None and name in {
-            "resolve_prepare_render_job", "resolve_verify_render_output",
+            "resolve_prepare_render_job",
+            "resolve_verify_render_output",
             "resolve_lua_prepare_render",
         }:
             try:
@@ -336,6 +398,8 @@ class AutomaticServer(MCPServer[Any]):
             return await _complete_work(self._capabilities(arguments))
         if name == "resolve_free_connection_status":
             return await self._connection_status(arguments, context)
+        if name == "resolve_create_project":
+            return await self._create_project(arguments, context)
         primary = {tool.name for tool in await self.primary.list_tools()}
         native = (
             name in self.native_tools
@@ -360,21 +424,25 @@ class AutomaticServer(MCPServer[Any]):
                     result = render_tool_error(error)
                     assert result.structured_content is not None
                     result.structured_content.update(
-                        phase="readiness", outcome="not_dispatched",
+                        phase="readiness",
+                        outcome="not_dispatched",
                         detail="Render request was not dispatched. "
-                               f"Native readiness failed: {error}",
+                        f"Native readiness failed: {error}",
                     )
-                    result.content = [TextContent(
-                        type="text",
-                        text=f"{result.structured_content['code']}: "
-                             f"{result.structured_content['detail']}",
-                    )]
+                    result.content = [
+                        TextContent(
+                            type="text",
+                            text=f"{result.structured_content['code']}: "
+                            f"{result.structured_content['detail']}",
+                        )
+                    ]
                     return result
             else:
                 await _complete_work(
                     asyncio.to_thread(
                         self.connection.ensure,
                         require_sdk_channel=False,
+                        allow_project_open=name != "resolve_lua_create_project",
                     )
                 )
         target = self.primary if name in primary else self.marker
