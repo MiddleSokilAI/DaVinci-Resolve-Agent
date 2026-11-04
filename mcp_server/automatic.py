@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,7 @@ from providers.resolve.automatic_connection import (
 from providers.resolve.client import ResolveProviderClient
 from providers.resolve.lua_editing import atomic_json
 from providers.resolve.marker_supervisor import Profile
+from providers.resolve.project_open_service import ProjectOpenError
 
 
 class _RuntimeMediaPolicy:
@@ -157,6 +159,60 @@ class AutomaticServer(MCPServer[Any]):
         tools.update({tool.name: tool for tool in await self.primary.list_tools()})
         return list(tools.values())
 
+    async def _connection_status(
+        self, arguments: dict[str, Any], context: Any
+    ) -> Any:
+        """Attach to the current project without opening a historical target.
+
+        The backend must still perform its correlated native status request;
+        successful host bootstrap alone is not connection proof.
+        """
+        timeout = arguments.get("timeout_seconds", 30)
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout)
+            or not 0 < timeout <= 600
+        ):
+            return _error("INVALID_ARGUMENTS", "timeout_seconds must be in (0, 600].")
+        backend_called = False
+        try:
+            await _complete_work(asyncio.to_thread(
+                self.connection.ensure,
+                timeout=timeout,
+                require_sdk_channel=False,
+                allow_project_open=False,
+            ))
+            backend_called = True
+            return await _complete_work(self.marker.call_tool(
+                "resolve_free_connection_status", arguments, context
+            ))
+        except (OSError, RuntimeError, ValueError) as error:
+            code = str(getattr(error, "code", "NATIVE_CONNECTION_FAILED"))
+            cause = (
+                error.cause_code if isinstance(error, ProjectOpenError) else None
+            ) or getattr(error.__cause__, "code", None)
+            evidence = {
+                "code": code,
+                "detail": str(error),
+                "connected": False,
+                "native_roundtrip_verified": False,
+                # A backend exception may precede its native request; do not
+                # infer dispatch merely from delegation.
+                "native_request_attempted": None if backend_called else False,
+                "liveness_source": "local_connection_diagnostics",
+                "recording_readiness": "not_assessed",
+                "uncertain": getattr(error, "uncertain", None),
+                "project_open_requested": False,
+            }
+            if isinstance(cause, str):
+                evidence["cause_code"] = cause
+            return CallToolResult(
+                content=[TextContent(type="text", text=json.dumps(evidence))],
+                structured_content=evidence,
+                is_error=True,
+            )
+
     async def _ready(self) -> None:
         # Bootstrap precedes command creation, so the native timeout/expiry
         # covers SDK work rather than application launch and project opening.
@@ -278,6 +334,8 @@ class AutomaticServer(MCPServer[Any]):
                 return _error("INVALID_ARGUMENTS", str(error))
         if name == "video_agent_capabilities":
             return await _complete_work(self._capabilities(arguments))
+        if name == "resolve_free_connection_status":
+            return await self._connection_status(arguments, context)
         primary = {tool.name for tool in await self.primary.list_tools()}
         native = (
             name in self.native_tools

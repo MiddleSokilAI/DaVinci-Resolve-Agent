@@ -499,7 +499,9 @@ def test_terminal_close_replay_finishes_owned_guard_after_host_crash(
         },
         4096,
     )
-    guard.publish(time.monotonic() + 1)
+    # Seed the crashed host's guard without imposing a disk-speed benchmark.
+    # Recovery assertions below still require this exact owned guard to clear.
+    guard.publish(time.monotonic() + 30)
     intent_path = worker.profile.state_directory / "project-close.json"
     intent = json.loads(intent_path.read_text())
     intent_path.write_text(json.dumps({**intent, "phase": "pending"}))

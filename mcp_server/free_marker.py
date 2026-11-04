@@ -109,6 +109,8 @@ def create_server(
         terminal lifecycle export returns disconnected without publishing a new
         request into an exited immutable session. Local diagnostics never infer
         a selected project from window captions or host lease renewal.
+        Automatic mode attaches only to the current project for this status
+        check; it never launches Resolve or opens a historical project.
         """
         common = {
             "backend": "free_marker",

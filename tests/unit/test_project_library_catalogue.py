@@ -170,6 +170,31 @@ def test_nested_project_directories_are_unsupported(library: Library) -> None:
         library.verify()
 
 
+def test_rendered_project_accepts_native_batch_render_xml(library: Library) -> None:
+    batch = library.path.parent / "Batch Renders"
+    batch.mkdir()
+    (batch / f"{IDENTITY}.xml").write_text("<RenderJob />")
+    result = library.verify()
+    assert result["project"] == {"id": IDENTITY, "name": NAME}
+    assert result["project_count"] == 1
+    assert result["native_connection_verified"] is False
+    assert [item["path"] for item in result["sources"]] == [str(library.path)]
+
+
+@pytest.mark.parametrize("entry", ["nested", "Project.db", "unknown.xml"])
+def test_batch_render_directory_does_not_hide_project_layouts(
+    library: Library, entry: str,
+) -> None:
+    batch = library.path.parent / "Batch Renders"
+    batch.mkdir()
+    if entry == "nested":
+        (batch / entry).mkdir()
+    else:
+        (batch / entry).write_bytes(b"unknown")
+    with pytest.raises(ProjectLibraryCatalogueError, match="NESTED_OR_UNKNOWN"):
+        library.verify()
+
+
 @pytest.mark.parametrize("suffix", ["-wal", "-shm", "-journal"])
 def test_rejects_any_live_database_sidecar(library: Library, suffix: str) -> None:
     library.path.with_name(library.path.name + suffix).write_bytes(b"sidecar")

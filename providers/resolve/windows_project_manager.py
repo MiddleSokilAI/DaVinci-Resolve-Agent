@@ -23,7 +23,10 @@ from uuid import uuid4
 from providers.resolve.lua_editing import bounded_text
 from providers.resolve.lua_project_context import validate_project_context_request
 from providers.resolve.lua_transport import read_project_snapshot
-from providers.resolve.project_library_catalogue import verify_project_library_target
+from providers.resolve.project_library_catalogue import (
+    ProjectLibraryCatalogueError,
+    verify_project_library_target,
+)
 from providers.resolve.windows_bootstrap import _unique_object, _validate_process
 
 _STATES = {
@@ -398,7 +401,9 @@ class WindowsProjectManagerAdapter:
         except Exception as cause:
             error = WindowsProjectManagerError(
                 cause.code
-                if isinstance(cause, WindowsProjectManagerError)
+                if isinstance(
+                    cause, (WindowsProjectManagerError, ProjectLibraryCatalogueError)
+                )
                 else "PROJECT_OPEN_PREFLIGHT_FAILED",
                 operation="open_existing",
             )

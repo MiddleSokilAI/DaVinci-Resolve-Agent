@@ -1631,6 +1631,25 @@ def test_composite_requires_export_identity_and_fresh_catalogue_before_one_open(
     assert result["native_connection_verified"] is False
 
 
+def test_catalogue_refusal_survives_preflight_without_ui_dispatch(
+    composite: tuple[WindowsProjectManagerAdapter, list[str], dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from providers.resolve.project_library_catalogue import ProjectLibraryCatalogueError
+
+    adapter, calls, _ = composite
+
+    def refuse(**kwargs: Any) -> Any:
+        raise ProjectLibraryCatalogueError("NESTED_OR_UNKNOWN_PROJECT_LAYOUT")
+
+    monkeypatch.setattr(module, "verify_project_library_target", refuse)
+    with pytest.raises(WindowsProjectManagerError) as error:
+        _open_composite(adapter)
+    assert error.value.code == "NESTED_OR_UNKNOWN_PROJECT_LAYOUT"
+    assert error.value.uncertain is False
+    assert calls == []
+
+
 @pytest.mark.parametrize(
     "phase",
     ["filter_candidate", "select_filtered_candidate", "begin_candidate_export", "save"],
