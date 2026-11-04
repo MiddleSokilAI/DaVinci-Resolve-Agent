@@ -5,7 +5,14 @@ $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+$script:dispatchStarted=$false
 function Fail([string]$Code) { throw $Code }
+function Test-CreationWindowReady($Pattern) {
+    return ($Pattern.Current.WindowVisualState -ne [System.Windows.Automation.WindowVisualState]::Minimized -and
+        $Pattern.Current.WindowInteractionState -in @(
+            [System.Windows.Automation.WindowInteractionState]::Running,
+            [System.Windows.Automation.WindowInteractionState]::ReadyForUserInteraction))
+}
 function Find-Control($Root,[string]$Id,[string]$Type) {
     $items=$Root.FindAll([System.Windows.Automation.TreeScope]::Descendants,
         [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::AutomationIdProperty,$Id))
@@ -18,6 +25,7 @@ function Find-Control($Root,[string]$Id,[string]$Type) {
 function Invoke-Control($Item) {
     $pattern=$null
     if(!$Item.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)){Fail 'INVOKE_UNAVAILABLE'}
+    $script:dispatchStarted=$true
     $pattern.Invoke()
 }
 try {
@@ -45,8 +53,7 @@ try {
            $main.Current.Name -cne 'Project Manager' -or $main.Current.IsOffscreen -or !$main.Current.IsEnabled){Fail 'MANAGER_CHANGED'}
         $window=$null
         if(!$main.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern,[ref]$window) -or
-           $window.Current.WindowVisualState -eq [System.Windows.Automation.WindowVisualState]::Minimized -or
-           $window.Current.WindowInteractionState -ne [System.Windows.Automation.WindowInteractionState]::ReadyForUserInteraction){Fail 'MANAGER_BLOCKED'}
+           !(Test-CreationWindowReady $window)){Fail 'MANAGER_BLOCKED'}
         $id='UiProjectManagerDialog.frameProjectManagerBorder.m_ProjectManagerView.projManagerContents.splitterProjects.m_ViewProjects.projActionBottomFrame.btnAddProject'
         $button=Find-Control $main $id 'ControlType.Button'
         if($button.Current.Name -cne 'New Project'){Fail 'BUTTON_CHANGED'}
@@ -82,6 +89,6 @@ try {
         @{ok=$true;operation=$r.operation;dialog=$token} | ConvertTo-Json -Depth 4 -Compress
     }
 } catch {
-    @{ok=$false;code='PROJECT_CREATE_UI_FAILED';detail=$_.Exception.Message} | ConvertTo-Json -Compress
+    @{ok=$false;code='PROJECT_CREATE_UI_FAILED';detail=$_.Exception.Message;dispatch_started=[bool]$script:dispatchStarted} | ConvertTo-Json -Compress
     exit 1
 }
