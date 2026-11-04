@@ -604,6 +604,12 @@ class Supervisor:
         """Advance one bounded observation while both coordinator locks are held."""
         if not self.profile.enabled:
             return self._status("disabled")
+        from providers.resolve.project_create_service import pending_project_creation
+
+        if pending_project_creation(self.profile):
+            return self._status(
+                "recovery_required", reason="PROJECT_CREATION_REQUIRES_RECOVERY"
+            )
         active = read_active(self.profile)
         with self._lease_scope(active) as release_previous_lease:
             return self._observe(active, release_previous_lease)

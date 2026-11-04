@@ -110,7 +110,8 @@ class AutomaticConnection:
 
     def _last_project(self) -> dict[str, Any]:
         # Read validated host receipts rather than guessing a project by caption.
-        pending_project_open(self.profile)
+        if pending_project_open(self.profile)["pending"]:
+            raise AutomaticConnectionError("PROJECT_OPERATION_REQUIRES_RECOVERY")
         active = read_active(self.profile)
         preferred = (active or {}).get("last_native_project") or {}
         candidates: list[tuple[float, dict[str, Any]]] = []
@@ -187,6 +188,12 @@ class AutomaticConnection:
         deadline = time.monotonic() + limit
         launched = False
         while time.monotonic() < deadline:
+            from providers.resolve.project_create_service import (
+                pending_project_creation,
+            )
+
+            if pending_project_creation(self.profile):
+                raise AutomaticConnectionError("PROJECT_CREATION_REQUIRES_RECOVERY")
             active = read_active(self.profile)
             closure = close_intent(self.profile)
             if closure:
@@ -218,7 +225,9 @@ class AutomaticConnection:
                         host = self.adapter.inspect()
                     except WindowsBootstrapError as error:
                         if error.uncertain or error.code not in {
-                            "DRIVER_FAILURE", "TIMEOUT", "DRIVER_IO_FAILED"
+                            "DRIVER_FAILURE",
+                            "TIMEOUT",
+                            "DRIVER_IO_FAILED",
                         }:
                             raise
                         # Only inspection repeats; no launch or native/menu

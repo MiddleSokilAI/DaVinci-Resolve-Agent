@@ -9,6 +9,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
+- Automatic Project Manager creation through fixed background UIA Invoke/Value
+  patterns, with durable once-only dispatch receipts, cross-route key ownership,
+  native UUID/library/root verification and persisted Project.db identity checks.
+  Cold creation never opens a historical project; uncertain retries only recover
+  the original operation. Live Create/native-bootstrap verification is pending.
+
 - Configurable installed `DataRoot` shared by Python and ResolveBridge, verified
   legacy-data migration, compatibility junctions and a 10 GiB output reserve.
 - Live storage migration of 1440 files (8.369 GiB) to drive G with per-file

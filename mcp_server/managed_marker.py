@@ -118,6 +118,9 @@ def claim_write_key(
         raise ValueError("Unknown managed write route.")
     digest = hashlib.sha256(key.encode()).hexdigest()
     host_receipt = profile.state_directory / "project-open-receipts" / f"{digest}.json"
+    creation = profile.state_directory / "project-create-receipts" / f"{digest}.json"
+    if creation.exists() or creation.is_symlink():
+        raise OriginalGenerationRequired("Key belongs to a host project creation.")
     if host_receipt.exists() or host_receipt.is_symlink():
         raise OriginalGenerationRequired(
             "Idempotency key already belongs to a host project-open operation; "

@@ -18,6 +18,9 @@ EXPECTED_DISTRIBUTION: Final = "davinci-resolve-agent"
 EXPECTED_REQUIRES_PYTHON: Final = frozenset({">=3.10", "<3.13"})
 REQUIRED_MEMBERS: Final = frozenset(
     {
+        "providers/resolve/ResolveProjectCreateUI.ps1",
+        "providers/resolve/windows_project_create.py",
+        "providers/resolve/project_create_service.py",
         "agent/__init__.py",
         "agent/cli.py",
         "agent/recipes.py",

@@ -301,6 +301,8 @@ class WindowsBootstrapAdapter:
         self,
         root: Path,
         process: dict[str, Any],
+        *,
+        background_only: bool = False,
     ) -> dict[str, Any]:
         """Dispatch one verified managed menu entry; never claim native connection.
 
@@ -309,6 +311,10 @@ class WindowsBootstrapAdapter:
         """
         self._available()
         process = _validate_process(process, eligible=True)
+        if type(background_only) is not bool:
+            raise ValueError("background_only must be boolean.")
+        if background_only and process["window_state"] == "minimized":
+            raise WindowsBootstrapError("BACKGROUND_WINDOW_MINIMIZED")
         try:
             digest = _managed_script_hash(root)
         except WindowsBootstrapError:
@@ -320,6 +326,7 @@ class WindowsBootstrapAdapter:
                 "operation": "invoke_managed_marker",
                 "expected_process": process,
                 "expected_sha256": digest,
+                **({"background_only": True} if background_only else {}),
             }
         )
 
@@ -441,6 +448,8 @@ class WindowsBootstrapAdapter:
                     ["Workspace", "Scripts", "Resolve Agent Marker"],
                 )
                 or type(result["minimized_restored"]) is not bool
+                or payload.get("background_only")
+                and result["minimized_restored"]
                 or result["minimized_restored"]
                 != (expected["window_state"] == "minimized")
             ):

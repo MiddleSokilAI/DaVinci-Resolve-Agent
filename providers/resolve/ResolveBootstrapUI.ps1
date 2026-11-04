@@ -106,7 +106,12 @@ function ConvertTo-BootstrapRequest([string]$Text) {
     switch -CaseSensitive ($request.operation) {
         'inspect' { Assert-BootstrapKeys $request @('operation') }
         'invoke_managed_marker' {
-            Assert-BootstrapKeys $request @('operation','expected_process','expected_sha256')
+            $keys=@('operation','expected_process','expected_sha256')
+            if ($null -ne $request.PSObject.Properties['background_only']) {
+                if ($request.background_only -isnot [bool] -or !$request.background_only) { Fail-Bootstrap 'INVALID_REQUEST' }
+                $keys+=,'background_only'
+            }
+            Assert-BootstrapKeys $request $keys
             Assert-BootstrapProcessData $request.expected_process $true
             if ($request.expected_sha256 -isnot [string] -or
                 $request.expected_sha256 -cnotmatch '^[0-9a-f]{64}\z') { Fail-Bootstrap 'INVALID_REQUEST' }
@@ -421,9 +426,9 @@ function Find-BootstrapMenuItem([string[]]$Names, [bool]$Optional = $false) {
 
 function Expand-BootstrapMenu($Item) {
     $null=Assert-BootstrapContext
-    Assert-BootstrapForeground
+    if (!$script:BackgroundOnly) { Assert-BootstrapForeground }
     $expand=$null
-    if ($Item.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern,[ref]$expand)) {
+    if (!$script:BackgroundOnly -and $Item.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern,[ref]$expand)) {
         if ($expand.Current.ExpandCollapseState -eq [System.Windows.Automation.ExpandCollapseState]::Collapsed) {
             $expand.Expand()
         } elseif ($expand.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded) {
@@ -440,6 +445,7 @@ function Expand-BootstrapMenu($Item) {
 }
 
 function Invoke-BootstrapManagedMarker($Request) {
+    $script:BackgroundOnly=($null -ne $Request.PSObject.Properties['background_only'])
     $script:ExpectedProcess=$Request.expected_process
     $script:ExpectedSha256=$Request.expected_sha256
     $main=Assert-BootstrapContext
@@ -447,6 +453,7 @@ function Invoke-BootstrapManagedMarker($Request) {
     $state=Get-BootstrapWindowState $main
     if ($state -cne $script:ExpectedProcess.window_state) { Fail-Bootstrap 'WINDOW_STATE_CHANGED' }
     if ($state -ceq 'minimized') {
+        if ($script:BackgroundOnly) { Fail-Bootstrap 'BACKGROUND_WINDOW_MINIMIZED' }
         $pattern=$null
         if (-not $main.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern,[ref]$pattern)) {
             Fail-Bootstrap 'WINDOW_RESTORE_UNAVAILABLE'
@@ -458,7 +465,7 @@ function Invoke-BootstrapManagedMarker($Request) {
         if ((Get-BootstrapWindowState $main) -ceq 'minimized') { Fail-Bootstrap 'WINDOW_RESTORE_FAILED' }
     }
     if ($main.Current.IsOffscreen) { Fail-Bootstrap 'WINDOW_OFFSCREEN' }
-    Activate-BootstrapWindow
+    if (!$script:BackgroundOnly) { Activate-BootstrapWindow }
     Expand-BootstrapMenu (Find-BootstrapMenuItem @('Workspace'))
     Expand-BootstrapMenu (Find-BootstrapMenuItem @('Scripts'))
     $menuPath=@('Workspace','Scripts')
@@ -470,7 +477,7 @@ function Invoke-BootstrapManagedMarker($Request) {
         Fail-Bootstrap 'SCRIPT_INVOKE_UNAVAILABLE'
     }
     $null=Assert-BootstrapContext
-    Assert-BootstrapForeground
+    if (!$script:BackgroundOnly) { Assert-BootstrapForeground }
     $null=Get-BootstrapScriptHash
     # No retry after this boundary, even when Invoke blocks or throws. A native
     # round trip, not this driver response, determines whether startup succeeded.

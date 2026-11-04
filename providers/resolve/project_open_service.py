@@ -227,6 +227,17 @@ def pending_project_open(profile: Profile) -> dict[str, Any]:
         for path, value in _receipts(profile)
         if value["status"] in _PENDING
     ]
+    from providers.resolve.project_create_service import pending_project_creation
+
+    pending.extend(
+        {
+            "key_hash": item["key_hash"],
+            "status": item["phase"],
+            "project_name": item["name"],
+            "operation": "create_project",
+        }
+        for item in pending_project_creation(profile)
+    )
     return {
         "status": "inspected",
         "pending": bool(pending),
@@ -278,6 +289,10 @@ class ProjectOpenService:
             yield
 
     def _native_clear(self, key_hash: str) -> None:
+        from providers.resolve.project_create_service import pending_project_creation
+
+        if pending_project_creation(self.profile):
+            raise ProjectOpenError("PROJECT_CREATION_REQUIRES_RECOVERY", uncertain=True)
         owner = self.profile.state_directory / "write-owners" / f"{key_hash}.json"
         _unlinked(owner)
         if owner.exists():

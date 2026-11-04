@@ -183,7 +183,8 @@ def test_rendered_project_accepts_native_batch_render_xml(library: Library) -> N
 
 @pytest.mark.parametrize("entry", ["nested", "Project.db", "unknown.xml"])
 def test_batch_render_directory_does_not_hide_project_layouts(
-    library: Library, entry: str,
+    library: Library,
+    entry: str,
 ) -> None:
     batch = library.path.parent / "Batch Renders"
     batch.mkdir()
@@ -305,3 +306,19 @@ def test_rejects_noncanonical_id_or_non_disk_request(library: Library) -> None:
         library.verify(
             expected_database={"DbType": "PostgreSQL", "DbName": "Local Database"}
         )
+
+
+def test_empty_selected_library_can_be_inspected_before_creation(
+    library: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # sqlite3 connection context managers do not close handles on Windows.
+    # Build a separate empty library instead of deleting any open fixture DB.
+    library.library = library.library.parent / "empty-library"
+    (library.library / "Resolve Projects/Users/guest/Projects").mkdir(parents=True)
+    library.write_registry()
+    monkeypatch.setattr(module, "_registry_path", lambda: library.registry)
+    report = module.selected_project_library()
+    assert report["projects"] == []
+    assert report["project_count"] == 0
+    assert report["database"] == DATABASE
+    assert report["native_connection_verified"] is False

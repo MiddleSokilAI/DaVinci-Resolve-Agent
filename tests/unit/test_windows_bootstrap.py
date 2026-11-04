@@ -579,8 +579,19 @@ def test_driver_parses_without_running_its_entrypoint() -> None:
 
 
 @pytest.mark.parametrize(
-    "mode", ["nested", "automation-id", "duplicate", "ambiguous", "foreign", "group",
-             "manager", "hidden-manager", "wrong-manager", "manager-and-editor"]
+    "mode",
+    [
+        "nested",
+        "automation-id",
+        "duplicate",
+        "ambiguous",
+        "foreign",
+        "group",
+        "manager",
+        "hidden-manager",
+        "wrong-manager",
+        "manager-and-editor",
+    ],
 )
 def test_synthetic_discovery_finds_only_unique_editor_identity(mode: str) -> None:
     result = _offline_powershell(
@@ -816,6 +827,49 @@ def test_activation_rechecks_context_before_accepting_foreground(changed: bool) 
         changed,
     )
     assert result == {
-        "failed": changed, "contexts": 2,
-        "foreground": 0 if changed else 1, "calls": 1,
+        "failed": changed,
+        "contexts": 2,
+        "foreground": 0 if changed else 1,
+        "calls": 1,
     }
+
+
+def test_background_dispatch_sends_fixed_mode_without_restore(
+    runtime: tuple[Path, Path],
+    driver: tuple[list[dict[str, Any]], dict[str, Any]],
+) -> None:
+    root, _ = runtime
+    calls, _ = driver
+    adapter = WindowsBootstrapAdapter(enabled=True)
+    adapter.invoke_managed_marker(root, process(), background_only=True)
+    assert json.loads(calls[0]["input"])["background_only"] is True
+    with pytest.raises(WindowsBootstrapError, match="BACKGROUND_WINDOW_MINIMIZED"):
+        adapter.invoke_managed_marker(
+            root,
+            process(window_state="minimized"),
+            background_only=True,
+        )
+    assert len(calls) == 1
+
+
+def test_background_submenu_uses_invoke_without_focus_or_expand_pattern() -> None:
+    result = _offline_powershell(r"""
+        Add-Type -AssemblyName UIAutomationClient;
+        $script:BackgroundOnly=$true; $script:Calls=0;
+        function Assert-BootstrapContext {}
+        function Assert-BootstrapForeground { throw 'foreground used' }
+        function Start-Sleep { param($Milliseconds) }
+        $item=[pscustomobject]@{};
+        $item|Add-Member ScriptMethod TryGetCurrentPattern {
+            param($pattern,$output)
+            if($pattern -ne [System.Windows.Automation.InvokePattern]::Pattern){
+                throw 'Non-Invoke pattern requested'
+            }
+            $invoke=[pscustomobject]@{};
+            $invoke|Add-Member ScriptMethod Invoke {$script:Calls++};
+            $output.Value=$invoke; return $true
+        };
+        Expand-BootstrapMenu $item;
+        @{calls=$script:Calls}|ConvertTo-Json -Compress
+    """)
+    assert result["calls"] == 1

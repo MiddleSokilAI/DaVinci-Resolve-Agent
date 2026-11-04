@@ -37,6 +37,7 @@ evidence.
 | Free | open | present | project і current timeline доступні | `verified` |
 | Free | open | absent | project доступний, current timeline відсутній | `pending` |
 | Free | none | not applicable | bridge відповідає без вигаданого project | `pending` |
+| Free | Project Manager | not applicable | `resolve_create_project`: fixed UIA Create, background Lua bootstrap, fresh UUID/library/root and persisted identity | `pending` — only dialog SetValue/Cancel observed; Create not dispatched |
 | Studio | open | present | project і current timeline доступні | `pending` |
 | Studio | open | absent | project доступний, current timeline відсутній | `pending` |
 | Studio | none | not applicable | bridge відповідає без вигаданого project | `pending` |
