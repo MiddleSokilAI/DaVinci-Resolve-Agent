@@ -441,7 +441,8 @@ function Expand-BootstrapMenu($Item) {
         }
         $invoke.Invoke()
     }
-    Start-Sleep -Milliseconds 200
+    # Match the verified Qt menu-settling interval before locating the next item.
+    Start-Sleep -Milliseconds 750
 }
 
 function Initialize-BootstrapAccessibility {
