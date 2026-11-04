@@ -428,7 +428,7 @@ function Expand-BootstrapMenu($Item) {
     $null=Assert-BootstrapContext
     if (!$script:BackgroundOnly) { Assert-BootstrapForeground }
     $expand=$null
-    if (!$script:BackgroundOnly -and $Item.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern,[ref]$expand)) {
+    if ($Item.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern,[ref]$expand)) {
         if ($expand.Current.ExpandCollapseState -eq [System.Windows.Automation.ExpandCollapseState]::Collapsed) {
             $expand.Expand()
         } elseif ($expand.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded) {
@@ -441,7 +441,74 @@ function Expand-BootstrapMenu($Item) {
         }
         $invoke.Invoke()
     }
-    Start-Sleep -Milliseconds 200
+    # Match the verified Qt menu-settling interval before locating the next item.
+    Start-Sleep -Milliseconds 750
+}
+
+function Initialize-BootstrapAccessibility {
+    if ('BootstrapMarkerAction' -as [type]) { return }
+    Add-Type -ReferencedAssemblies Accessibility -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using Accessibility;
+public sealed class BootstrapMarkerAction {
+    [DllImport("oleacc.dll")] private static extern int AccessibleObjectFromWindow(IntPtr h,uint id,ref Guid iid,[MarshalAs(UnmanagedType.Interface)] out object value);
+    [DllImport("oleacc.dll")] private static extern int AccessibleChildren(IAccessible acc,int start,int count,[Out,MarshalAs(UnmanagedType.LPArray,ArraySubType=UnmanagedType.Struct,SizeParamIndex=2)] object[] children,out int got);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
+    private IAccessible owner;
+    private object child;
+    private IntPtr window;
+    private int process;
+    public static void ValidateSnapshot(string name,int role,int state,string action) {
+        if(name!="Resolve Agent Marker" && name!="Resolve Agent Marker.lua") throw new Exception("BSUI_SCRIPT_ACCESSIBILITY_CHANGED");
+        if(role!=12 || (state & (1|0x8000|0x10000))!=0) throw new Exception("BSUI_SCRIPT_ACCESSIBILITY_UNAVAILABLE");
+        if(action!="Execute" && action!="Press" && action!="\u0412\u0438\u043a\u043e\u043d\u0430\u0442\u0438") throw new Exception("BSUI_SCRIPT_DEFAULT_ACTION_UNAVAILABLE");
+    }
+    private void Validate() {
+        uint pid; GetWindowThreadProcessId(window,out pid);
+        if(pid!=process) throw new Exception("BSUI_PROCESS_CHANGED");
+        ValidateSnapshot(owner.get_accName(child),Convert.ToInt32(owner.get_accRole(child)),Convert.ToInt32(owner.get_accState(child)),owner.get_accDefaultAction(child));
+    }
+    public static BootstrapMarkerAction Prepare(IntPtr window,int process) {
+        uint pid; GetWindowThreadProcessId(window,out pid);
+        if(window==IntPtr.Zero || pid!=process) throw new Exception("BSUI_PROCESS_CHANGED");
+        object value; Guid iid=new Guid("618736e0-3c3d-11cf-810c-00aa00389b71");
+        int result=AccessibleObjectFromWindow(window,0xfffffffcu,ref iid,out value);
+        if(result!=0) throw new Exception("BSUI_SCRIPT_ACCESSIBILITY_UNAVAILABLE");
+        IAccessible acc=(IAccessible)value;
+        int count=acc.accChildCount;
+        if(count<1 || count>128) throw new Exception("BSUI_MENU_TREE_LIMIT");
+        object[] children=new object[count]; int got;
+        result=AccessibleChildren(acc,0,count,children,out got);
+        if(result<0 || got!=count) throw new Exception("BSUI_SCRIPT_ACCESSIBILITY_UNAVAILABLE");
+        BootstrapMarkerAction selected=null; int matches=0;
+        foreach(object item in children) {
+            IAccessible owner=acc; object child=item;
+            if(!(item is int)) { owner=(IAccessible)item; child=0; }
+            string name=owner.get_accName(child);
+            if(name=="Resolve Agent Marker" || name=="Resolve Agent Marker.lua") {
+                matches++;
+                selected=new BootstrapMarkerAction {owner=owner,child=child,window=window,process=process};
+            }
+        }
+        if(matches!=1) throw new Exception("BSUI_SCRIPT_ACCESSIBILITY_AMBIGUOUS");
+        selected.Validate();
+        return selected;
+    }
+    public void Invoke() { Validate(); owner.accDoDefaultAction(child); }
+}
+'@
+}
+
+function Get-BootstrapMarkerAction($Item) {
+    # Qt exposes this leaf through MSAA even when UIA Invoke silently does nothing.
+    # Select exactly one action before dispatch; never retry via a second API.
+    Initialize-BootstrapAccessibility
+    $identity=$Item.GetRuntimeId()
+    if ($identity.Count -lt 3 -or $identity[0] -ne 42 -or $identity[1] -eq 0) {
+        Fail-Bootstrap 'SCRIPT_ACCESSIBILITY_UNAVAILABLE'
+    }
+    return [BootstrapMarkerAction]::Prepare([IntPtr]::new($identity[1]),[int]$script:ExpectedProcess.pid)
 }
 
 function Invoke-BootstrapManagedMarker($Request) {
@@ -473,7 +540,9 @@ function Invoke-BootstrapManagedMarker($Request) {
     if ($null -ne $utility) { Expand-BootstrapMenu $utility; $menuPath+=,'Utility' }
     $item=Find-BootstrapMenuItem @('Resolve Agent Marker','Resolve Agent Marker.lua')
     $invoke=$null
-    if (-not $item.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern,[ref]$invoke)) {
+    if ($script:BackgroundOnly) {
+        $invoke=Get-BootstrapMarkerAction $item
+    } elseif (-not $item.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern,[ref]$invoke)) {
         Fail-Bootstrap 'SCRIPT_INVOKE_UNAVAILABLE'
     }
     $null=Assert-BootstrapContext

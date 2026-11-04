@@ -21,7 +21,7 @@ from providers.resolve.automatic_connection import (
     AutomaticConnection,
     AutomaticConnectionError,
 )
-from providers.resolve.marker_supervisor import Profile, Supervisor, _lock
+from providers.resolve.marker_supervisor import Profile, Supervisor, _lock, read_active
 from providers.resolve.project_create_service import (
     ProjectCreateError,
     ProjectCreateService,
@@ -31,6 +31,7 @@ from providers.resolve.project_open_service import (
     ProjectOpenService,
     pending_project_open,
 )
+from providers.resolve.windows_bootstrap import WindowsBootstrapError
 from providers.resolve.windows_project_create import WindowsProjectCreateError
 
 PROJECT = {"id": "11111111-2222-4333-8444-555555555555", "name": "Новий проєкт"}
@@ -64,12 +65,20 @@ class Fixture:
         self.persistence_fail = False
         self.dialog_waits = 0
         self.dialog_present = False
+        self.bootstrap_error: WindowsBootstrapError | None = None
+        self.open_name = PROJECT["name"]
         self.existing: list[dict[str, str]] = []
 
     def inspect(self) -> dict[str, Any]:
+        process = dict(self.process)
+        if self.created and self.state == "project_window":
+            process.update(
+                project_name_hint=self.open_name,
+                window_title=f"DaVinci Resolve - {self.open_name}",
+            )
         return {
             "state": self.state,
-            "process": None if self.state == "resolve_not_running" else self.process,
+            "process": None if self.state == "resolve_not_running" else process,
             "eligible": self.state != "resolve_not_running",
         }
 
@@ -109,6 +118,8 @@ class Fixture:
     def invoke_managed_marker(self, root: Any, process: Any, **kwargs: Any) -> None:
         assert kwargs == {"background_only": True}
         self.calls.append("bootstrap")
+        if self.bootstrap_error is not None:
+            raise self.bootstrap_error
         if self.lost_bootstrap_ack:
             raise RuntimeError("Lost bootstrap acknowledgment")
 
@@ -165,8 +176,18 @@ class Fixture:
 def test_creates_once_and_replay_does_not_inspect_or_open(tmp_path: Path) -> None:
     f = Fixture(tmp_path)
     f.dialog_waits = 2
+    f.existing = [{"id": "99999999-2222-4333-8444-555555555555", "name": "Existing"}]
     result = f.create()
     assert result["project"] == PROJECT and result["persisted"] is True
+    active = read_active(f.profile)
+    assert active is not None
+    metadata = json.loads(
+        (Path(active["runtime"]) / "session.json").read_text(encoding="utf-8")
+    )
+    assert metadata["creation_context"] == {
+        "name": PROJECT["name"], "database": DATABASE,
+        "excluded_project_ids": [f.existing[0]["id"]],
+    }
     assert not pending_project_open(f.profile)["pending"]
     assert (
         f.calls.count("begin")
@@ -211,6 +232,123 @@ def test_uncertain_recovery_never_repeats_create_or_bootstrap(
     assert f.create()["persisted"] is True
     assert f.calls.count("create") == 1
     assert f.calls.count("bootstrap") == 1
+
+
+@pytest.mark.parametrize("uncertain", [False, True])
+def test_bootstrap_error_preserves_cause_and_original_creation(
+    tmp_path: Path, uncertain: bool,
+) -> None:
+    f = Fixture(tmp_path)
+    f.bootstrap_error = WindowsBootstrapError(
+        "MENU_ITEM_UNAVAILABLE", uncertain=uncertain
+    )
+    with pytest.raises(ProjectCreateError, match="MENU_ITEM_UNAVAILABLE") as failure:
+        f.create()
+    assert failure.value.uncertain is True
+    assert failure.value.cause_code == "MENU_ITEM_UNAVAILABLE"
+    assert failure.value.bridge_dispatch_uncertain is uncertain
+    active = read_active(f.profile)
+    assert active is not None
+    assert active["dispatch_started"] is uncertain
+    assert active["last_error"] == "MENU_ITEM_UNAVAILABLE"
+    receipt = next(iter(creation_receipts(f.profile).values()))
+    assert receipt["phase"] == "bootstrapping"
+    assert receipt["native_binding"]["generation"] == active["generation"]
+    assert f.calls.count("create") == f.calls.count("bootstrap") == 1
+    assert "get_current_project" not in f.calls
+    f.bootstrap_error = None
+    result = f.create()
+    assert result["persisted"] is True
+    assert result["generation"] == active["generation"]
+    assert f.calls.count("create") == 1
+    assert f.calls.count("bootstrap") == (1 if uncertain else 2)
+    before = list(f.calls)
+    assert f.create()["replayed"] is True
+    assert f.calls == before
+
+
+def test_bootstrap_unknown_error_keeps_dispatch_owned(tmp_path: Path) -> None:
+    f = Fixture(tmp_path)
+    f.lost_bootstrap_ack = True
+    with pytest.raises(ProjectCreateError):
+        f.create()
+    active = read_active(f.profile)
+    assert active is not None and active["dispatch_started"] is True
+    f.lost_bootstrap_ack = False
+    assert f.create()["persisted"] is True
+    assert f.calls.count("create") == f.calls.count("bootstrap") == 1
+
+
+def test_definite_bridge_refusal_does_not_retry_in_another_project(
+    tmp_path: Path,
+) -> None:
+    f = Fixture(tmp_path)
+    f.bootstrap_error = WindowsBootstrapError("MENU_ITEM_UNAVAILABLE")
+    with pytest.raises(ProjectCreateError):
+        f.create()
+    f.bootstrap_error = None
+    f.open_name = "Another project"
+    before = list(f.calls)
+    with pytest.raises(ProjectCreateError, match="CREATED_PROJECT_WINDOW_CHANGED"):
+        f.create()
+    assert f.calls == before
+
+
+@pytest.mark.parametrize("evidence", ["marker-session-consumed.drp", "stopped.json"])
+def test_definite_bridge_refusal_keeps_prior_native_start_owned(
+    tmp_path: Path, evidence: str,
+) -> None:
+    f = Fixture(tmp_path)
+
+    def already_started(root: Path, process: Any, **kwargs: Any) -> None:
+        f.calls.append("bootstrap")
+        (root / evidence).write_bytes(b"Earlier native startup evidence")
+        raise WindowsBootstrapError("SESSION_ALREADY_CONSUMED", uncertain=False)
+
+    f.invoke_managed_marker = already_started  # type: ignore[method-assign]
+    with pytest.raises(ProjectCreateError) as failure:
+        f.create()
+    assert failure.value.uncertain is True
+    assert failure.value.bridge_dispatch_uncertain is False
+    active = read_active(f.profile)
+    assert active is not None and active["dispatch_started"] is True
+    # The next call can verify the original native context; the raising adapter
+    # would make this fail if it attempted to bootstrap again.
+    assert f.create()["persisted"] is True
+    assert f.calls.count("create") == f.calls.count("bootstrap") == 1
+
+
+@pytest.mark.parametrize("uncertain", [False, True])
+def test_mcp_exposes_bridge_cause_without_discarding_creation_uncertainty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, uncertain: bool,
+) -> None:
+    f = Fixture(tmp_path)
+    f.bootstrap_error = WindowsBootstrapError(
+        "MENU_ITEM_UNAVAILABLE", uncertain=uncertain
+    )
+    monkeypatch.setattr(creation_module, "ProjectCreateService", lambda _: f.service())
+    server = AutomaticServer(f.profile, start_worker=False)
+    args = {"name": PROJECT["name"], "confirm_create": True, "idempotency_key": KEY}
+
+    async def scenario() -> None:
+        async with Client(server) as client:
+            response = await client.call_tool("resolve_create_project", args)
+            assert response.is_error
+            assert response.structured_content is not None
+            assert response.structured_content["code"] == (
+                "PROJECT_BRIDGE_BOOTSTRAP_FAILED"
+            )
+            assert response.structured_content["uncertain"] is True
+            assert response.structured_content["cause_code"] == "MENU_ITEM_UNAVAILABLE"
+            assert response.structured_content["bridge_dispatch_uncertain"] is uncertain
+            f.bootstrap_error = None
+            result = await client.call_tool("resolve_create_project", args)
+            assert not result.is_error
+            assert result.structured_content is not None
+            assert result.structured_content["persisted"] is True
+
+    asyncio.run(scenario())
+    assert f.calls.count("create") == 1
 
 
 def test_lost_begin_ack_recovers_dialog_without_new_project_again(
@@ -485,15 +623,15 @@ def test_unavailable_window_does_not_fall_back_to_saved_project_readiness(
 ) -> None:
     f = Fixture(tmp_path)
     inspections = 0
+    original_inspect = f.inspect
 
     def inspect() -> dict[str, Any]:
         nonlocal inspections
         inspections += 1
-        return {
-            "state": "window_unavailable" if inspections == 1 else f.state,
-            "eligible": inspections != 1,
-            "process": f.process,
-        }
+        observation = original_inspect()
+        if inspections == 1:
+            observation.update(state="window_unavailable", eligible=False)
+        return observation
 
     f.inspect = inspect  # type: ignore[method-assign]
     monkeypatch.setattr(creation_module, "ProjectCreateService", lambda _: f.service())

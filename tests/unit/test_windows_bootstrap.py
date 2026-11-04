@@ -852,7 +852,7 @@ def test_background_dispatch_sends_fixed_mode_without_restore(
     assert len(calls) == 1
 
 
-def test_background_submenu_uses_invoke_without_focus_or_expand_pattern() -> None:
+def test_background_submenu_falls_back_to_invoke_only_if_expand_unavailable() -> None:
     result = _offline_powershell(r"""
         Add-Type -AssemblyName UIAutomationClient;
         $script:BackgroundOnly=$true; $script:Calls=0;
@@ -862,8 +862,8 @@ def test_background_submenu_uses_invoke_without_focus_or_expand_pattern() -> Non
         $item=[pscustomobject]@{};
         $item|Add-Member ScriptMethod TryGetCurrentPattern {
             param($pattern,$output)
-            if($pattern -ne [System.Windows.Automation.InvokePattern]::Pattern){
-                throw 'Non-Invoke pattern requested'
+            if($pattern -eq [System.Windows.Automation.ExpandCollapsePattern]::Pattern){
+                return $false
             }
             $invoke=[pscustomobject]@{};
             $invoke|Add-Member ScriptMethod Invoke {$script:Calls++};
@@ -873,3 +873,99 @@ def test_background_submenu_uses_invoke_without_focus_or_expand_pattern() -> Non
         @{calls=$script:Calls}|ConvertTo-Json -Compress
     """)
     assert result["calls"] == 1
+
+
+def test_background_submenu_expands_without_forcing_foreground() -> None:
+    result = _offline_powershell(r"""
+        Add-Type -AssemblyName UIAutomationClient;
+        $script:BackgroundOnly=$true; $script:Calls=0;
+        function Assert-BootstrapContext {}
+        function Assert-BootstrapForeground { throw 'foreground used' }
+        function Start-Sleep { param($Milliseconds) }
+        $item=[pscustomobject]@{};
+        $item|Add-Member ScriptMethod TryGetCurrentPattern {
+            param($pattern,$output)
+            $expected=[System.Windows.Automation.ExpandCollapsePattern]::Pattern;
+            if($pattern -ne $expected){throw 'Invoke fallback used'}
+            $collapsed=[System.Windows.Automation.ExpandCollapseState]::Collapsed;
+            $expand=[pscustomobject]@{Current=[pscustomobject]@{
+                ExpandCollapseState=$collapsed
+            }};
+            $expand|Add-Member ScriptMethod Expand {$script:Calls++};
+            $output.Value=$expand; return $true
+        };
+        Expand-BootstrapMenu $item;
+        @{calls=$script:Calls}|ConvertTo-Json -Compress
+    """)
+    assert result["calls"] == 1
+
+
+def test_fixed_msaa_policy_compiles_and_rejects_other_actions_without_ui() -> None:
+    result = _offline_powershell(r"""
+        Initialize-BootstrapAccessibility;
+        $accepted=0; $refused=0;
+        $uk=(-join @([char]0x412,[char]0x438,[char]0x43a,[char]0x43e,
+            [char]0x43d,[char]0x430,[char]0x442,[char]0x438));
+        foreach($action in @('Execute','Press',$uk)){
+            [BootstrapMarkerAction]::ValidateSnapshot(
+                'Resolve Agent Marker',12,0,$action); $accepted++
+        }
+        foreach($row in @(
+            @('Other script',12,0,'Execute'),
+            @('Resolve Agent Marker',11,0,'Execute'),
+            @('Resolve Agent Marker',12,1,'Execute'),
+            @('Resolve Agent Marker',12,32768,'Execute'),
+            @('Resolve Agent Marker',12,65536,'Execute'),
+            @('Resolve Agent Marker',12,0,'Open')
+        )){
+            try {[BootstrapMarkerAction]::ValidateSnapshot(
+                $row[0],$row[1],$row[2],$row[3])}
+            catch {$refused++}
+        }
+        @{accepted=$accepted;refused=$refused}|ConvertTo-Json -Compress
+    """)
+    assert result == {"accepted": 3, "refused": 6}
+
+
+@pytest.mark.parametrize("fault", ["none", "selection", "dispatch"])
+def test_background_dispatch_selects_one_msaa_action_and_never_retries(
+    fault: str,
+) -> None:
+    result = _offline_powershell(r"""
+        $script:DispatchStarted=$false; $script:Calls=0;
+        $script:RestoredMinimized=$false;
+        $script:Fault=[Console]::In.ReadToEnd()|ConvertFrom-Json;
+        function Assert-BootstrapContext {
+            return [pscustomobject]@{Current=[pscustomobject]@{IsOffscreen=$false}}
+        }
+        function Get-BootstrapWindowState {param($Item) return 'normal'}
+        function Get-BootstrapScriptHash {return 'verified-hash'}
+        function Activate-BootstrapWindow {throw 'Forced foreground used'}
+        function Find-BootstrapMenuItem {
+            param($Names,$Optional)
+            if(!$Optional){return [pscustomobject]@{}}
+        }
+        function Expand-BootstrapMenu {param($Item)}
+        function Get-BootstrapMarkerAction {
+            param($Item)
+            if($script:Fault -eq 'selection'){throw 'selection refused'}
+            $action=[pscustomobject]@{};
+            $action|Add-Member ScriptMethod Invoke {
+                $script:Calls++;
+                if($script:Fault -eq 'dispatch'){throw 'uncertain action'}
+            };
+            return $action
+        }
+        try {
+            $r=Invoke-BootstrapManagedMarker ([pscustomobject]@{
+                background_only=$true;
+                expected_process=[pscustomobject]@{pid=123;window_state='normal'};
+                expected_sha256='verified-hash'
+            });
+        } catch {if($script:Fault -eq 'none'){throw}}
+        @{calls=$script:Calls;dispatch_started=$script:DispatchStarted}|
+            ConvertTo-Json -Compress
+    """, fault)
+    assert result == {
+        "calls": int(fault != "selection"), "dispatch_started": fault != "selection"
+    }

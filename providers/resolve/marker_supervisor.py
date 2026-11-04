@@ -530,12 +530,14 @@ class Supervisor:
         self,
         process: dict[str, Any],
         previous_runtime: Path | None = None,
+        *,
+        creation_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Adopt an explicit pristine root once, otherwise prepare a new one."""
         self._audit_rotation()
         initial = self.profile.initial_runtime
         journaled = any((self.profile.state_directory / "generations").glob("*.json"))
-        if initial is not None and not journaled:
+        if initial is not None and not journaled and creation_context is None:
             evidence = inspect_startup(initial)
             if evidence["native_start_evidence"] != "not_observed":
                 raise SupervisorError("INITIAL_RUNTIME_ALREADY_CONSUMED")
@@ -547,6 +549,7 @@ class Supervisor:
                 list(self.profile.media_roots),
                 lease_seconds=self.profile.lease_seconds,
                 sdk_runtime_root=self.profile.runtime_base,
+                creation_context=creation_context,
             )
         metadata = _json(root / "session.json")
         active: dict[str, Any] = {

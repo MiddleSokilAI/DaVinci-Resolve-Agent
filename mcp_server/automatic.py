@@ -277,6 +277,12 @@ class AutomaticServer(MCPServer[Any]):
                 "uncertain": getattr(error, "uncertain", creation_attempted),
                 "project_open_requested": False,
             }
+            cause_code = getattr(error, "cause_code", None)
+            if isinstance(cause_code, str):
+                evidence["cause_code"] = cause_code
+            bridge_uncertain = getattr(error, "bridge_dispatch_uncertain", None)
+            if type(bridge_uncertain) is bool:
+                evidence["bridge_dispatch_uncertain"] = bridge_uncertain
             return CallToolResult(
                 content=[TextContent(type="text", text=json.dumps(evidence))],
                 structured_content=evidence,

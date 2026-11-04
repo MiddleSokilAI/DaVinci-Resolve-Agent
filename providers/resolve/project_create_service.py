@@ -36,6 +36,7 @@ from providers.resolve.project_open_service import (
 )
 from providers.resolve.windows_bootstrap import (
     WindowsBootstrapAdapter,
+    WindowsBootstrapError,
     _official_executable,
 )
 from providers.resolve.windows_project_create import (
@@ -60,9 +61,18 @@ def _valid_project(value: Any) -> bool:
 
 
 class ProjectCreateError(RuntimeError):
-    def __init__(self, code: str, *, uncertain: bool = False) -> None:
+    def __init__(
+        self, code: str, *, uncertain: bool = False,
+        cause_code: str | None = None,
+        bridge_dispatch_uncertain: bool | None = None,
+    ) -> None:
         self.code, self.uncertain = code, uncertain
-        super().__init__(f"Project creation: {code}. No creation action was repeated.")
+        self.cause_code = cause_code
+        self.bridge_dispatch_uncertain = bridge_dispatch_uncertain
+        cause = f" Bridge cause: {cause_code}." if cause_code is not None else ""
+        super().__init__(
+            f"Project creation: {code}.{cause} No creation action was repeated."
+        )
 
 
 def validate_creation(name: Any, confirm: Any, key: Any, timeout: Any) -> None:
@@ -559,7 +569,14 @@ class ProjectCreateService:
             receipt["phase"] = "bootstrapping"
             atomic_json(path, receipt)
             active = supervisor._new(
-                current, Path(active["runtime"]) if active else None
+                current, Path(active["runtime"]) if active else None,
+                creation_context={
+                    "name": receipt["name"],
+                    "database": receipt["before"]["database"],
+                    "excluded_project_ids": [
+                        project["id"] for project in receipt["before"]["projects"]
+                    ],
+                },
             )
             receipt["native_binding"] = ProjectOpenService._binding(active)
             atomic_json(path, receipt)
@@ -571,6 +588,10 @@ class ProjectCreateService:
         root = Path(active["runtime"])
         with MarkerLeaseKeeper(root):
             if not active["dispatch_started"]:
+                if current.get("project_name_hint") != receipt["name"]:
+                    raise ProjectCreateError(
+                        "CREATED_PROJECT_WINDOW_CHANGED", uncertain=True
+                    )
                 supervisor.menu_installer(root)
                 self._remaining(deadline)
                 active.update(
@@ -579,7 +600,32 @@ class ProjectCreateService:
                     dispatch_started_at=supervisor.clock(),
                 )
                 supervisor._save(active)
-                self.host.invoke_managed_marker(root, current, background_only=True)
+                try:
+                    self.host.invoke_managed_marker(root, current, background_only=True)
+                except WindowsBootstrapError as error:
+                    active["last_error"] = error.code
+                    native_start_observed = any(
+                        evidence.exists() or evidence.is_symlink()
+                        for evidence in (
+                            root / "marker-session-consumed.drp", root / "stopped.json"
+                        )
+                    )
+                    if error.uncertain is False and not native_start_observed:
+                        # This attempt definitely did not invoke the bridge.
+                        # Keep the original Create receipt/generation; only its
+                        # bridge startup may resume on the next same-key call.
+                        active.update(
+                            phase="prepared", dispatch_started=False,
+                            dispatch_started_at=None,
+                        )
+                    supervisor._save(active)
+                    # Create was already sent. A definite bridge refusal must
+                    # not imply a definite failure of the project creation.
+                    raise ProjectCreateError(
+                        "PROJECT_BRIDGE_BOOTSTRAP_FAILED", uncertain=True,
+                        cause_code=error.code,
+                        bridge_dispatch_uncertain=error.uncertain,
+                    ) from error
             result = self.client_factory(root).request(
                 "get_current_project",
                 self._remaining(deadline),
