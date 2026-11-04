@@ -236,24 +236,37 @@ class AutomaticServer(MCPServer[Any]):
             )
             owned = await asyncio.to_thread(service.owns_key, key)
             host = None if owned else await asyncio.to_thread(service.host.inspect)
-            if owned or host and host.get("state") == "project_manager":
-                if not key:
-                    return _error(
-                        "IDEMPOTENCY_KEY_REQUIRED",
-                        "Cold creation requires a stable key.",
+            if not owned and host and (
+                host.get("state") == "project_window" and host.get("eligible") is True
+            ):
+                try:
+                    await _complete_work(self._ready(allow_project_open=False))
+                except AutomaticConnectionError as error:
+                    if error.code not in {"NO_ACTIVE_PROJECT", "PROJECT_CLOSED"}:
+                        raise
+                    # The window may have closed between the two read-only
+                    # inspections. No create command has been dispatched yet.
+                else:
+                    creation_attempted = True
+                    return await _complete_work(
+                        self.primary.call_tool(
+                            "resolve_create_project", arguments, context
+                        )
                     )
-                creation_attempted = True
-                result = await _complete_work(
-                    asyncio.to_thread(service.create, **arguments)
+            # A closed application, a loading window or Project Manager needs
+            # the creation service, never existing-project readiness/history.
+            if not key:
+                return _error(
+                    "IDEMPOTENCY_KEY_REQUIRED",
+                    "Cold creation requires a stable key.",
                 )
-                return CallToolResult(
-                    content=[TextContent(type="text", text=json.dumps(result))],
-                    structured_content=result,
-                )
-            await _complete_work(self._ready(allow_project_open=False))
             creation_attempted = True
-            return await _complete_work(
-                self.primary.call_tool("resolve_create_project", arguments, context)
+            result = await _complete_work(
+                asyncio.to_thread(service.create, **arguments)
+            )
+            return CallToolResult(
+                content=[TextContent(type="text", text=json.dumps(result))],
+                structured_content=result,
             )
         except (OSError, ValueError, RuntimeError) as error:
             evidence = {
@@ -356,6 +369,14 @@ class AutomaticServer(MCPServer[Any]):
             report.update(connected=False, evidence=str(connection_error)[:64])
             for row in report["workflows"]:
                 if row["scope"] == "resolve" and row["supported"]:
+                    if row["workflow"] == "project_creation" and connection_error in {
+                        "NO_ACTIVE_PROJECT", "PROJECT_CLOSED",
+                    }:
+                        row.update(
+                            available=False, status="unverified",
+                            reason="independent_creation_preflight_required",
+                        )
+                        continue
                     row.update(
                         available=False, status="blocked", reason=connection_error
                     )

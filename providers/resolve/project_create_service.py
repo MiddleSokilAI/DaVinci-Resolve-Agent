@@ -10,6 +10,7 @@ import hashlib
 import json
 import math
 import re
+import subprocess
 import time
 import unicodedata
 from pathlib import Path
@@ -17,7 +18,13 @@ from typing import Any
 
 from providers.resolve.lua_editing import atomic_json, bounded_text
 from providers.resolve.lua_transport import LuaSnapshotClient
-from providers.resolve.marker_supervisor import Profile, Supervisor, read_active
+from providers.resolve.marker_supervisor import (
+    OperationBusy,
+    Profile,
+    Supervisor,
+    _lock,
+    read_active,
+)
 from providers.resolve.marker_transport import MarkerLeaseKeeper
 from providers.resolve.project_library_catalogue import selected_project_library
 from providers.resolve.project_open_service import (
@@ -27,7 +34,10 @@ from providers.resolve.project_open_service import (
     _token,
     _unlinked,
 )
-from providers.resolve.windows_bootstrap import WindowsBootstrapAdapter
+from providers.resolve.windows_bootstrap import (
+    WindowsBootstrapAdapter,
+    _official_executable,
+)
 from providers.resolve.windows_project_create import WindowsProjectCreateAdapter
 from providers.resolve.windows_project_manager import WindowsProjectManagerAdapter
 
@@ -214,6 +224,60 @@ class ProjectCreateService:
             )
         return min(remaining, self.profile.native_timeout_seconds)
 
+    def _manager(self, deadline: float) -> dict[str, Any]:
+        """Launch at most once and await Project Manager without opening history.
+
+        This runs under the operation lock after pending-write guards. Startup
+        alone never owns the creation key; a later call can use that same key
+        after a startup timeout. Creation intent is persisted before New Project.
+        """
+        launched: subprocess.Popen[bytes] | None = None
+        launched_pid: int | None = None
+        observed_process: tuple[int, str, str] | None = None
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ProjectCreateError("PROJECT_MANAGER_STARTUP_TIMEOUT")
+            observation = self.host.inspect()
+            state, process = observation.get("state"), observation.get("process")
+            if process is not None:
+                token = _token(process)
+                if (
+                    launched_pid is not None and token[0] != launched_pid
+                    or observed_process is not None and token != observed_process
+                ):
+                    raise ProjectCreateError("STARTUP_PROCESS_CHANGED")
+                observed_process = token
+            if state == "project_manager" and process is not None:
+                return dict(process)
+            if state == "resolve_not_running":
+                if observed_process is not None or (
+                    launched is not None and launched.poll() is not None
+                ):
+                    # Do not relaunch a failed/replaced process in this call.
+                    raise ProjectCreateError("RESOLVE_STARTUP_EXITED")
+                if launched is None:
+                    executable = Path(_official_executable())
+                    if not executable.is_file():
+                        raise ProjectCreateError("RESOLVE_NOT_INSTALLED")
+                    try:
+                        launched = subprocess.Popen(
+                            [str(executable)],
+                            stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            shell=False,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                        )
+                    except OSError as error:
+                        raise ProjectCreateError("RESOLVE_STARTUP_FAILED") from error
+                    launched_pid = launched.pid
+            elif state != "window_unavailable":
+                # An existing project, a modal or ambiguous desktop is never
+                # switched away, focused or treated as an empty Project Manager.
+                raise ProjectCreateError("PROJECT_MANAGER_REQUIRED")
+            time.sleep(min(0.2, remaining))
+
     def create(
         self,
         *,
@@ -264,13 +328,14 @@ class ProjectCreateService:
                 guard._native_clear(digest)
                 supervisor = self.supervisor_factory(self.profile)
                 supervisor._audit_rotation()
-                observation = self.host.inspect()
-                if observation.get("state") != "project_manager" or not observation.get(
-                    "process"
-                ):
-                    raise ProjectCreateError("PROJECT_MANAGER_REQUIRED")
-                process = observation["process"]
-                _token(process)
+                try:
+                    # Share launch ownership with AutomaticConnection.ensure.
+                    # Acquisition is nonblocking: never wait for connection.lock
+                    # while holding operation.lock (the warm path takes both).
+                    with _lock(self.profile, "connection.lock"):
+                        process = self._manager(deadline)
+                except OperationBusy as error:
+                    raise ProjectCreateError("PROJECT_STARTUP_BUSY") from error
                 manager = self.manager.inspect()
                 if (
                     manager.get("state") != "project_manager"
@@ -285,6 +350,12 @@ class ProjectCreateService:
                     for item in before["projects"]
                 ):
                     raise ProjectCreateError("PROJECT_NAME_ALREADY_EXISTS")
+                # Exhausted read-only preflight must not publish a dialog intent
+                # that recovery would wait for even though Begin never ran.
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ProjectCreateError("PROJECT_CREATION_PREFLIGHT_TIMEOUT")
+                remaining = min(remaining, self.profile.native_timeout_seconds)
                 receipt = {
                     "schema": 1,
                     "action": "create_project",
@@ -315,7 +386,7 @@ class ProjectCreateService:
                 )
                 atomic_json(path, receipt)
                 self.ui.request(
-                    "begin", process, timeout_seconds=self._remaining(deadline)
+                    "begin", process, timeout_seconds=remaining
                 )
             try:
                 return self._recover(path, receipt, deadline)
