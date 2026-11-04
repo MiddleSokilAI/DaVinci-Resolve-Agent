@@ -11,6 +11,7 @@ from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
 from agent import __version__
+from mcp_server.project_support import OPTIONAL_PROJECT_SUPPORT
 from mcp_server.recording import register_native_recording_tools
 from providers.resolve.lua_cleanup import cleanup_responses
 from providers.resolve.lua_transport import LuaSnapshotClient, prepare
@@ -27,14 +28,14 @@ def create_server(
     server = MCPServer(
         name=name,
         version=__version__,
-        instructions=instructions or (
+        instructions=(instructions or (
             "Experimental Lua snapshot bridge. Requires a saved open "
             "project and a manually bootstrapped bridge (no session expiry). "
             "Requests run without mouse or keyboard input. Each request exports "
             "the project locally; not suitable for large projects. Writes require "
             "expected project ID, confirmation, and a stable idempotency key. "
             "After a timeout never retry with a new key: the edit may have happened."
-        ),
+        )) + OPTIONAL_PROJECT_SUPPORT,
     )
     read = ToolAnnotations(
         read_only_hint=True,
