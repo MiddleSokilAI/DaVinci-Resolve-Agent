@@ -14,9 +14,11 @@ from test_resolve_bridge_writes import FakeResolve, _command, _run_command
 from test_sdk_command_client import Channel, queued, setup_worker
 
 from agent.application import AgentApplication
+from agent.client import BridgeCommandError
 from agent.contracts import validate_contract
 from bridges.resolve import ResolveBridge as bridge
 from mcp_server.automatic import AutomaticServer
+from mcp_server.server import create_server
 from providers.resolve.automatic_connection import (
     AutomaticConnection,
     AutomaticConnectionError,
@@ -50,6 +52,102 @@ def closable(native: FakeResolve, monkeypatch: pytest.MonkeyPatch) -> list[Any]:
 
 def arguments(native: FakeResolve) -> dict[str, Any]:
     return {"expected_project_id": native.project.GetUniqueId(), "confirm_close": True}
+
+
+def empty_placeholder() -> Any:
+    folder = SimpleNamespace(GetClipList=lambda: [], GetSubFolderList=lambda: [])
+    pool = SimpleNamespace(GetRootFolder=lambda: folder)
+    return SimpleNamespace(
+        GetName=lambda: "Untitled Project",
+        GetUniqueId=lambda: "5f422fbf-7db4-49ff-af25-c412a6635dbf",
+        GetTimelineCount=lambda: 0, GetCurrentTimeline=lambda: None,
+        IsRenderingInProgress=lambda: False, GetMediaPool=lambda: pool,
+    )
+
+
+def test_mcp_close_preserves_native_error_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mcp import Client
+
+    application = AgentApplication()
+
+    def failed(*args: Any, **kwargs: Any) -> Any:
+        raise BridgeCommandError(code="PROJECT_CLOSE_READBACK_FAILED",
+            message="Inspect original", retryable=False)
+
+    monkeypatch.setattr(application, "resolve_close_project", failed)
+
+    async def run() -> Any:
+        async with Client(create_server(application)) as client:
+            return await client.call_tool("resolve_close_project", {
+                "expected_project_id": "original", "confirm_close": True,
+                "idempotency_key": "original-key",
+            })
+
+    result = asyncio.run(run())
+    assert result.is_error
+    assert result.structured_content["code"] == "PROJECT_CLOSE_READBACK_FAILED"
+
+
+def test_close_accepts_only_empty_unsaved_native_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native = FakeResolve()
+    replacement = empty_placeholder()
+    current = {"value": native.project}
+    calls: list[str] = []
+    monkeypatch.setattr(native.project_manager, "GetCurrentProject",
+        lambda: current["value"])
+    monkeypatch.setattr(native.project_manager, "GetProjectListInCurrentFolder",
+        lambda: ["Saved"], raising=False)
+
+    def close(project: Any) -> bool:
+        assert project is native.project
+        calls.append("close")
+        current["value"] = replacement
+        return True
+
+    monkeypatch.setattr(native.project_manager, "CloseProject", close, raising=False)
+    response = _run_command(tmp_path, native, bridge.collect_bridge_state(native),
+        _command(str(uuid4()), "close_project", arguments(native)))
+    assert response["status"] == "success"
+    assert response["result"]["post_close_context"]["state"] == (
+        "empty_unsaved_placeholder"
+    )
+    assert calls == ["close"]
+
+
+@pytest.mark.parametrize("fault", [
+    "same_id", "name", "saved", "timeline", "clips", "folders", "render", "changed"
+])
+def test_close_readback_refuses_other_or_nonempty_replacement(fault: str) -> None:
+    project = empty_placeholder()
+    expected = "original-project"
+    manager = SimpleNamespace(GetCurrentProject=lambda: project,
+        GetProjectListInCurrentFolder=lambda: ["Saved"])
+    if fault == "same_id":
+        expected = project.GetUniqueId()
+    elif fault == "name":
+        project.GetName = lambda: "Other project"
+    elif fault == "saved":
+        manager.GetProjectListInCurrentFolder = lambda: ["Untitled Project"]
+    elif fault == "timeline":
+        project.GetTimelineCount = lambda: 1
+    elif fault == "clips":
+        project.GetMediaPool().GetRootFolder().GetClipList = lambda: ["clip"]
+    elif fault == "folders":
+        project.GetMediaPool().GetRootFolder().GetSubFolderList = lambda: ["folder"]
+    elif fault == "render":
+        project.IsRenderingInProgress = lambda: True
+    else:
+        calls: list[bool] = []
+
+        def current() -> Any:
+            calls.append(True)
+            return project if len(calls) == 1 else None
+
+        manager.GetCurrentProject = current
+    with pytest.raises(bridge.BridgeOperationError, match="closure could not"):
+        bridge._closed_project_context(manager, expected)
 
 
 def test_native_close_saves_backs_up_and_replays_without_changing_new_project(

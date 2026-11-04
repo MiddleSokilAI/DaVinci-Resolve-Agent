@@ -139,6 +139,91 @@ def test_complete_canonical_close_over_actual_lua_adapter(tmp_path: Path) -> Non
     assert len(channels) == 1
 
 
+@pytest.mark.parametrize(
+    "fault", ["none", "saved", "media", "missing_media", "timeline"]
+)
+def test_create_after_closure_never_saves_empty_placeholder(
+    tmp_path: Path, fault: str,
+) -> None:
+    channels: list[LuaChannel] = []
+
+    def factory(operation: dict[str, Any], timeout: float) -> LuaChannel:
+        channel = LuaChannel(tmp_path, operation)
+        channel.lua.globals().test_fault = fault
+        channel.lua.execute("""
+            local folder=setmetatable({}, {})
+            function folder:GetName() return 'Master' end
+            function folder:GetUniqueId() return 'folder-id' end
+            function folder:GetClipList()
+                if test_fault=='missing_media' then return nil end
+                if test_fault=='media' then return {'clip'} end
+                return {__flags=4194304}
+            end
+            function folder:GetSubFolderList() return {} end
+            local pool=setmetatable({}, {})
+            function pool:GetName() return 'Media pool' end
+            function pool:GetRootFolder() return folder end
+            local placeholder=setmetatable({}, {})
+            function placeholder:GetName() return 'Untitled Project' end
+            function placeholder:GetUniqueId()
+                return '5f422fbf-7db4-49ff-af25-c412a6635dbf' end
+            function placeholder:GetTimelineCount()
+                return test_fault=='timeline' and 1 or 0 end
+            function placeholder:GetCurrentTimeline() return nil end
+            function placeholder:GetTimelineByIndex() return nil end
+            function placeholder:GetMediaPool() return pool end
+            function placeholder:GetSetting() return {} end
+            function placeholder:IsRenderingInProgress() return false end
+            local pm=api:GetProjectManager()
+            local current=placeholder
+            function pm:GetCurrentProject() return current end
+            function pm:GetProjectListInCurrentFolder()
+                return test_fault=='saved' and {'Untitled Project'} or {'Existing'} end
+            function pm:SaveProject()
+                assert(current~=placeholder,'PLACEHOLDER_MUST_NOT_BE_SAVED')
+                api.saves=api.saves+1; return true
+            end
+            function pm:ExportProject() error('No backup of a blank placeholder') end
+            function pm:CreateProject(name)
+                api.created=(api.created or 0)+1
+                local project=setmetatable({}, {})
+                function project:GetName() return name end
+                function project:GetUniqueId()
+                    return '11111111-2222-4333-8444-555555555555' end
+                function project:GetTimelineCount() return 0 end
+                function project:GetCurrentTimeline() return nil end
+                function project:GetMediaPool() return nil end
+                function project:GetSetting() return {} end
+                function project:IsRenderingInProgress() return false end
+                current=project; return project
+            end
+        """)
+        channels.append(channel)
+        return channel
+
+    if fault != "none":
+        channel = factory(dict(id=uuid4().hex, action="create_project",
+            fingerprint="b" * 64, expires=4102444800, create_backup=True,
+            allow_destructive=False), 30)
+        manager = RemoteSDK(channel).root().GetProjectManager()
+        with pytest.raises(NativeSDKError, match="NATIVE_BACKUP_REQUIRED"):
+            manager.CreateProject("Must not create")
+        assert channel.lua.globals().api.created is None
+        assert channel.lua.globals().api.saves == 0
+        return
+
+    client = SDKCommandClient(tmp_path, "a" * 32, channel_factory=factory)
+    kwargs: dict[str, Any] = dict(provider="resolve", action="create_project",
+        arguments={"name": "New project", "confirm_create": True},
+        create_backup=True, idempotency_key="one-project-after-close")
+    result = client.request(**kwargs)
+    assert result["created"] is True and result["backup_path"] is None
+    assert result["skipped_startup_placeholder"]["name"] == "Untitled Project"
+    assert channels[0].lua.globals().api.saves == 1
+    assert channels[0].lua.globals().api.created == 1
+    assert client.request(**kwargs) == result and len(channels) == 1
+
+
 def test_lua_close_is_rejected_outside_its_canonical_action(tmp_path: Path) -> None:
     operation = dict(
         id=uuid4().hex,
