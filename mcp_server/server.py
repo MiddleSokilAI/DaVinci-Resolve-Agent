@@ -324,18 +324,31 @@ def create_server(application: AgentApplication | None = None) -> MCPServer:
         idempotency_key: str,
         confirm_close: bool = False,
         timeout_seconds: float = 30,
-    ) -> dict[str, Any]:
+    ) -> CallToolResult:
         """Save, back up and close exactly the current project; keep Resolve running.
 
         Requires explicit user intent. Reuse the same key after a timeout.
         Replay returns historical evidence without opening or closing any project.
         Automatic reopening stays suspended until an explicit project open.
         """
-        return await asyncio.to_thread(
-            service.resolve_close_project, expected_project_id,
-            confirm_close=confirm_close, idempotency_key=idempotency_key,
-            timeout_seconds=timeout_seconds,
-        )
+        try:
+            return render_tool_result(await asyncio.to_thread(
+                service.resolve_close_project, expected_project_id,
+                confirm_close=confirm_close, idempotency_key=idempotency_key,
+                timeout_seconds=timeout_seconds,
+            ))
+        except (AgentClientError, ValueError) as error:
+            result = render_tool_error(error)
+            if isinstance(error, CommandTimeoutError):
+                assert result.structured_content is not None
+                result.structured_content["detail"] = (
+                    "Closure outcome is unverified. Inspect the original close "
+                    "receipt with the same key; never submit another closure."
+                )
+                result.content = [TextContent(type="text", text=json.dumps(
+                    result.structured_content
+                ))]
+            return result
 
     @server.tool(annotations=WRITE_TOOL)
     async def resolve_create_project(

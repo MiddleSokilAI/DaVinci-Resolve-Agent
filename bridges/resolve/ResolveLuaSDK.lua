@@ -227,6 +227,48 @@ return function(api, root, session, decode_json, policy, read_request, project_c
         local p=api:GetProjectManager():GetCurrentProject()
         return p and p:GetUniqueId() or ''
     end
+    local function empty_creation_context()
+        -- Native proof is mandatory: a host cannot waive backup with a flag.
+        local ok,empty=pcall(function()
+            local pm=api:GetProjectManager()
+            local project=pm:GetCurrentProject()
+            if not project then return true end
+            local id=project:GetUniqueId()
+            if type(id)~='string' or #id~=36 or id:sub(9,9)~='-'
+                or id:sub(14,14)~='-' or id:sub(19,19)~='-'
+                or id:sub(24,24)~='-' then return false end
+            local compact=id:gsub('-','')
+            if #compact~=32 or not compact:match('^[0-9a-f]+$') then return false end
+            if project:GetName()~='Untitled Project'
+                or project:GetTimelineCount()~=0 or project:GetCurrentTimeline()~=nil
+                or project:IsRenderingInProgress()~=false then return false end
+            local names=pm:GetProjectListInCurrentFolder()
+            if type(names)~='table' then return false end
+            local count=0
+            for key,value in pairs(names) do
+                if key=='__flags' and value==4194304 then
+                    -- Fusion collection metadata is not a project.
+                else
+                    count=count+1
+                    if count>128 or type(key)~='number' or key%1~=0 or key<1
+                        or key>128 or type(value)~='string'
+                        or value=='Untitled Project' then return false end
+                end
+            end
+            local folder=project:GetMediaPool():GetRootFolder()
+            local clips,folders=folder:GetClipList(),folder:GetSubFolderList()
+            if type(clips)~='table' or type(folders)~='table' then return false end
+            for _,values in ipairs({clips,folders}) do
+                for key,value in pairs(values) do
+                    if key~='__flags' or value~=4194304 then return false end
+                end
+            end
+            local current=pm:GetCurrentProject()
+            return current and current:GetUniqueId()==id
+                and current:GetName()=='Untitled Project'
+        end)
+        return ok and empty==true
+    end
     local function authorize(name)
         if not mutations[name] then return end
         local action=operation.action
@@ -237,7 +279,9 @@ return function(api, root, session, decode_json, policy, read_request, project_c
         for _,method in ipairs(policy.common_write_methods) do if method==name then allowed=true end end
         check(allowed,'SDK_METHOD_OUTSIDE_ACTION')
         if name~='SaveProject' then
-            check(operation.backup_ready==true,'SDK_NATIVE_BACKUP_REQUIRED')
+            check(operation.backup_ready==true or (name=='CreateProject'
+                and action=='create_project' and empty_creation_context()),
+                'SDK_NATIVE_BACKUP_REQUIRED')
         end
         if name=='DeleteClips' then check(operation.allow_destructive==true,'SDK_DESTRUCTIVE_DISABLED') end
         check(os.time()<=operation.expires,'SDK_OPERATION_EXPIRED')
@@ -301,6 +345,9 @@ return function(api, root, session, decode_json, policy, read_request, project_c
         end
         authorize(call.method)
         if invalidates[call.method] then assert_readset();descriptors={} end
+        if call.method=='CreateProject' and not operation.backup_ready then
+            check(empty_creation_context(),'SDK_NATIVE_BACKUP_REQUIRED')
+        end
         local result=f(target.value,unpack(args,1,count))
         if call.method=='ExportProject' and result==true then operation.backup_ready=true end
         if (call.method=='CreateProject' and result~=nil)

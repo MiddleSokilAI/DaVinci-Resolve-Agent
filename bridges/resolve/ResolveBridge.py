@@ -14,7 +14,7 @@ from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 BRIDGE_VERSION = "0.1.0"
 PROTOCOL_VERSION = "1.0"
@@ -504,7 +504,9 @@ def _parse_timestamp(value: Any, field_name: str) -> datetime:
     return parsed
 
 
-def validate_command(command: Any) -> dict[str, Any]:
+def validate_command(
+    command: Any, *, allow_expired: bool = False,
+) -> dict[str, Any]:
     """Validate the fixed command envelope and action-specific arguments."""
     if not isinstance(command, dict):
         raise ValueError("Command must be a JSON object.")
@@ -577,7 +579,7 @@ def validate_command(command: Any) -> dict[str, Any]:
 
     _parse_timestamp(command["created_at"], "created_at")
     expires_at = _parse_timestamp(command["expires_at"], "expires_at")
-    if expires_at <= datetime.now(timezone.utc):
+    if not allow_expired and expires_at <= datetime.now(timezone.utc):
         raise ValueError("Command has expired.")
     return command
 
@@ -3554,6 +3556,56 @@ def _apply_verified_capabilities(
             capabilities[capability] = True
 
 
+def _closed_project_context(manager: Any, expected: str) -> dict[str, Any]:
+    """Read closure without saving or closing Resolve's unsaved blank replacement."""
+    def collection(value: Any) -> list[Any]:
+        if isinstance(value, dict):
+            if "__flags" in value and value["__flags"] != 4194304:
+                raise ValueError("Unknown native collection metadata")
+            return [item for key, item in value.items() if key != "__flags"]
+        if isinstance(value, (list, tuple)):
+            return list(value)
+        raise ValueError("Native collection unavailable")
+
+    try:
+        current = manager.GetCurrentProject()
+        if current is None:
+            return {"state": "no_current_project"}
+        identity, name = current.GetUniqueId(), current.GetName()
+        if (
+            not isinstance(identity, str) or str(UUID(identity)) != identity
+            or identity == expected or name != "Untitled Project"
+            or type(current.GetTimelineCount()) is not int
+            or current.GetTimelineCount() != 0
+            or current.GetCurrentTimeline() is not None
+            or current.IsRenderingInProgress() is not False
+        ):
+            raise ValueError("Replacement is not the empty native placeholder")
+        names = collection(manager.GetProjectListInCurrentFolder())
+        if len(names) > 128 or any(not isinstance(item, str) for item in names):
+            raise ValueError("Project catalogue unavailable")
+        if name in names:
+            raise ValueError("Replacement is a saved project")
+        folder = current.GetMediaPool().GetRootFolder()
+        if collection(folder.GetClipList()) or collection(folder.GetSubFolderList()):
+            raise ValueError("Replacement contains media")
+        verified = manager.GetCurrentProject()
+        if (
+            verified is None or verified.GetUniqueId() != identity
+            or verified.GetName() != name
+        ):
+            raise ValueError("Replacement changed during readback")
+        return {
+            "state": "empty_unsaved_placeholder",
+            "replacement": {"id": identity, "name": name},
+        }
+    except Exception as error:
+        raise BridgeOperationError(
+            "PROJECT_CLOSE_READBACK_FAILED",
+            "Project closure could not be verified.",
+        ) from error
+
+
 def _execute_close_project(
     resolve: Any,
     command: dict[str, Any],
@@ -3602,17 +3654,14 @@ def _execute_close_project(
                 "PROJECT_CLOSE_FAILED",
                 "Native closure was not acknowledged; do not retry."
             )
-        if manager.GetCurrentProject() is not None:
-            raise BridgeOperationError(
-                "PROJECT_CLOSE_READBACK_FAILED",
-                "Project closure could not be verified."
-            )
+        post_close = _closed_project_context(manager, expected)
         result = {
             "project": {"project_id": expected, "name": name},
             "closed": True,
             "saved": True,
             "backup_path": backup_path,
             "evidence": "native_readback_at_execution",
+            "post_close_context": post_close,
         }
         _write_receipt(command, directories["state"], result)
         return result, []
@@ -3660,6 +3709,16 @@ def _execute_create_project(
     previous = manager.GetCurrentProject()
     previous_project_id = None
     backup_path = None
+    skipped_placeholder = None
+    if previous is not None and previous.GetName() == "Untitled Project":
+        try:
+            context = _closed_project_context(manager, "")
+            if context["state"] == "empty_unsaved_placeholder":
+                skipped_placeholder = context["replacement"]
+                previous = None
+        except BridgeOperationError:
+            # A saved or nonempty untitled project retains the normal backup.
+            pass
     if previous is not None:
         previous_project_id = str(previous.GetUniqueId())
         if previous.IsRenderingInProgress() is True:
@@ -3696,6 +3755,7 @@ def _execute_create_project(
             "project": {"project_id": str(created.GetUniqueId()), "name": name},
             "backup_path": backup_path,
             "previous_project_id": previous_project_id,
+            "skipped_startup_placeholder": skipped_placeholder,
             "created": True,
         }
         _write_receipt(command, directories["state"], result)

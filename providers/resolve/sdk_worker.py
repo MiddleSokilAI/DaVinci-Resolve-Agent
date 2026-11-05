@@ -180,7 +180,16 @@ class SDKWorker:
         if value.get("fingerprint") != bridge._request_fingerprint(command):
             raise RuntimeError("SDK_IDEMPOTENCY_CONFLICT")
         if value.get("phase") != "completed":
-            raise RuntimeError("ORIGINAL_SDK_OPERATION_REQUIRES_RECOVERY")
+            from providers.resolve.project_close_recovery import (
+                recover_acknowledged_close,
+            )
+
+            try:
+                value = recover_acknowledged_close(self.profile, receipt, value)
+            except (OSError, ValueError, RuntimeError, KeyError, TypeError) as error:
+                raise RuntimeError(
+                    "ORIGINAL_SDK_OPERATION_REQUIRES_RECOVERY"
+                ) from error
         response = dict(value["response"])
         root = _runtime(self.profile, value["runtime"])
         if (root / "inbox").exists():
@@ -195,7 +204,8 @@ class SDKWorker:
         )
         response["command_id"] = command["command_id"]
         response["warnings"] = [
-            *response["warnings"], "Historical close receipt; no native call was sent."
+            *response["warnings"],
+            "Historical close receipt; no native closure was sent."
         ]
         if response["status"] == "success":
             response["result"] = {**response["result"], "replayed": True,
