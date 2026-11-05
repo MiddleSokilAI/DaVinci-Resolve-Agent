@@ -1,10 +1,10 @@
 # DaVinci Resolve Agent
 
-![Made in Ukraine](https://img.shields.io/badge/made_in-Ukraine-ffd700.svg?labelColor=0057b7)
 [![Windows CI](https://img.shields.io/github/actions/workflow/status/Seiger/DaVinci-Resolve-Agent/windows-ci.yml?branch=main&label=Windows%20CI)](https://github.com/Seiger/DaVinci-Resolve-Agent/actions/workflows/windows-ci.yml?query=branch%3Amain)
 [![Python 3.10–3.12](https://img.shields.io/badge/Python-3.10%E2%80%933.12-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![Platform: Windows](https://img.shields.io/badge/platform-Windows-0078D4)](#compatibility)
 [![MCP tools: 157](https://img.shields.io/badge/MCP_tools-157-5865F2)](#key-features)
+![Made in Ukraine](https://img.shields.io/badge/made_in-Ukraine-ffd700.svg?labelColor=0057b7)
 
 **AI video editing agent and MCP server for DaVinci Resolve Free on Windows.**
 
