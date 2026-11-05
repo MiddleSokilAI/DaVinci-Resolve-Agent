@@ -14,6 +14,7 @@ from providers.resolve.marker_supervisor import Profile, read_active
 from providers.resolve.marker_transport import MarkerLeaseKeeper
 from providers.resolve.preset_channel import PresetSDKChannel
 from providers.resolve.remote_sdk import RemoteSDK
+from providers.resolve.windows_host import inspect_windows_host
 
 
 def _guard(path: Path) -> None:
@@ -39,6 +40,41 @@ def _read(path: Path) -> dict[str, Any]:
 
 def _native(root: Path, session: str, operation: dict[str, Any]) -> Any:
     return RemoteSDK(PresetSDKChannel(root, session, operation)).root()
+
+
+def _close_readback(
+    profile: Profile, active: dict[str, Any], root: Path,
+    session: str, operation: dict[str, Any], expected: str,
+) -> dict[str, Any]:
+    """A stopped original session needs host evidence, never a replacement launch."""
+    if active.get("phase") != "resolve_absent":
+        with MarkerLeaseKeeper(root):
+            native = _native(root, session, operation)
+            return bridge._closed_project_context(native.GetProjectManager(), expected)
+    from providers.resolve.windows_bootstrap import _validate_process
+
+    process = _validate_process(active.get("process"))
+    binding = {key: active.get(key) for key in (
+        "runtime", "session", "generation", "phase"
+    )}
+    observations = []
+    for _ in range(2):
+        observed = inspect_windows_host()
+        if (
+            observed.get("status") != "observed"
+            or observed.get("source") != "windows_process_metadata"
+            or observed.get("running") is not False
+            or observed.get("processes") != []
+        ):
+            raise RuntimeError("ORIGINAL_CLOSE_PROCESS_EXIT_UNVERIFIED")
+        observations.append(observed)
+    current = read_active(profile)
+    if not current or current.get("process") != process or any(
+        current.get(key) != value for key, value in binding.items()
+    ):
+        raise RuntimeError("ORIGINAL_CLOSE_GENERATION_CHANGED")
+    return {"state": "resolve_process_exited", "original_process": process,
+            "host_observations": observations}
 
 
 def _commit(
@@ -104,7 +140,9 @@ def recover_acknowledged_close(
             or result.get("project", {}).get("project_id") != expected
             or result.get("post_close_context") != saved.get("readback")
             or result.get("evidence") != (
-                "original_native_close_ack_and_fresh_readback"
+                "original_native_close_ack_and_process_exit"
+                if saved.get("readback", {}).get("state") == "resolve_process_exited"
+                else "original_native_close_ack_and_fresh_readback"
             )
             or result.get("backup_path") != saved.get(
                 "original_error_response", {}
@@ -202,13 +240,14 @@ def recover_acknowledged_close(
         "create_backup": False, "allow_destructive": False,
         "expires": int(time.time()) + 120,
     }
-    with MarkerLeaseKeeper(root):
-        native = _native(root, owner["session"], operation)
-        context = bridge._closed_project_context(native.GetProjectManager(), expected)
+    context = _close_readback(
+        profile, active, root, owner["session"], operation, expected)
     result = {
         "project": {"project_id": expected, "name": name},
         "closed": True, "saved": True, "backup_path": str(backup),
-        "evidence": "original_native_close_ack_and_fresh_readback",
+        "evidence": ("original_native_close_ack_and_process_exit"
+                     if context["state"] == "resolve_process_exited"
+                     else "original_native_close_ack_and_fresh_readback"),
         "post_close_context": context, "recovered": True,
     }
     response = {**failed, "status": "success", "error": None,

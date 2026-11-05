@@ -385,7 +385,9 @@ def test_original_key_recovers_absent_dialog_before_any_create(
         "dialog_pending"
     )
     assert not f.created and not f.dialog_present
-    result = f.create(timeout_seconds=1)
+    # This checks same-key recovery, not filesystem speed on a shared CI runner.
+    # Deadline exhaustion has a separate controlled-clock regression test.
+    result = f.create()
     assert result["persisted"] is True
     assert f.calls.count("begin") == f.calls.count("create") == 1
     assert f.create()["replayed"] is True

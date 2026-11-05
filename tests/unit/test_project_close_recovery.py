@@ -109,6 +109,64 @@ def test_original_key_recovers_acknowledged_close_and_replays_without_native_cal
     assert len(reads) == 1
 
 
+@pytest.mark.parametrize("fault", [None, "unavailable", "running", "race", "ack"])
+def test_exited_original_session_recovers_only_with_ack_and_two_absence_probes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str | None,
+) -> None:
+    import providers.resolve.windows_bootstrap as bootstrap
+
+    worker, path, owner, ledger, response, _, reads = fixture(tmp_path, monkeypatch)
+    active = module.read_active(worker.profile)
+    assert active is not None
+    executable = "C:/Program Files/Blackmagic Design/DaVinci Resolve/Resolve.exe"
+    monkeypatch.setattr(bootstrap, "_official_executable", lambda: executable)
+    active.update(phase="resolve_absent", process={
+        "pid": 123, "creation_time": "638999000000000000",
+        "executable_path": executable, "window_handle": 456,
+        "window_title": "DaVinci Resolve - New Project", "window_state": "normal",
+        "project_name_hint": "New Project",
+    })
+    observations: list[dict[str, Any]] = []
+
+    def host() -> dict[str, Any]:
+        value: dict[str, Any] = dict(status="observed", running=False,
+            source="windows_process_metadata", processes=[])
+        if len(observations) == 1:
+            if fault == "unavailable":
+                value.update(status="unavailable", running=None)
+            elif fault == "running":
+                value.update(running=True, processes=[{"pid": 999}])
+            elif fault == "race":
+                active["generation"] = "changed"
+        observations.append(value)
+        return value
+
+    monkeypatch.setattr(module, "inspect_windows_host", host)
+    monkeypatch.setattr(module, "_native", lambda *args: pytest.fail("Native call"))
+    if fault == "ack":
+        (Path(owner["runtime"]) / "sdk-trace/CloseProject.json").unlink()
+    before = {p: p.read_bytes() for p in (path, ledger, response)}
+    if fault:
+        with pytest.raises(RuntimeError):
+            module.recover_acknowledged_close(worker.profile, path, owner)
+        assert all(p.read_bytes() == data for p, data in before.items())
+        assert close_intent(worker.profile)["phase"] == "pending"
+    else:
+        recovered = module.recover_acknowledged_close(worker.profile, path, owner)
+        result = recovered["response"]["result"]
+        assert result["evidence"] == "original_native_close_ack_and_process_exit"
+        assert result["post_close_context"]["host_observations"] == observations
+        assert len(observations) == 2
+        # The worker's same-key terminal replay completes the close intent.
+        command = json.loads(
+            (worker.root / "failed" / (owner["command_id"] + ".json")).read_text())
+        worker.process(queued(
+            worker, "close_project", command["arguments"], "original-close"))
+        assert close_intent(worker.profile)["phase"] == "closed"
+        assert len(observations) == 2
+    assert not reads
+
+
 @pytest.mark.parametrize("fault", [
     "ack", "target", "backup", "content", "generation", "binding", "duplicate"
 ])

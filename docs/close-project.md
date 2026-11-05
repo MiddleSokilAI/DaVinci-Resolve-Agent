@@ -41,6 +41,14 @@ must match. Fresh native readback must show no project or the verified blank
 replacement. Missing acknowledgement or changed content retains the pending
 owner; recovery never submits CloseProject again or switches transport.
 
+If the original session has already been marked `resolve_absent`, recovery can
+instead verify that Resolve has exited. It requires the same original native
+acknowledgements and backup, valid original process identity, two successful
+read-only Windows process probes showing no Resolve processes, and unchanged
+session ownership. It records `original_native_close_ack_and_process_exit` and
+does not launch Resolve or send a native call. Unavailable metadata, a running
+process or changed ownership keeps the receipt pending.
+
 Before finalizing host receipts, recovery archives the original error and
 ledgers, native trace hashes and the read-only proof. A host crash resumes that
 archived outcome without another native call. Completed replay remains
