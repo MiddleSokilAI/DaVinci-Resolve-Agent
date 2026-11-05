@@ -19,6 +19,7 @@ class WindowsProjectCreateError(RuntimeError):
     def __init__(self, detail: str, *, uncertain: bool) -> None:
         self.code = "PROJECT_CREATE_UI_FAILED"
         self.uncertain = uncertain
+        self.detail = detail
         super().__init__(f"Fixed project creation adapter: {detail}")
 
 
@@ -36,7 +37,9 @@ class WindowsProjectCreateAdapter:
     ) -> dict[str, Any]:
         if sys.platform != "win32":
             raise RuntimeError("WINDOWS_UIA_REQUIRED")
-        if operation not in {"begin", "inspect_dialog", "create"}:
+        if operation not in {
+            "begin", "inspect_dialog", "create", "skip_startup_update"
+        }:
             raise ValueError("Unknown fixed creation operation.")
         if (
             type(timeout_seconds) not in {int, float}
@@ -96,8 +99,15 @@ class WindowsProjectCreateAdapter:
             or not isinstance(result, dict)
             or result.get("ok") is not True
             or result.get("operation") != operation
-            or set(result) - {"ok", "operation", "dialog"}
+            or set(result) - {"ok", "operation", "dialog", "skipped"}
         ):
+            raise RuntimeError("CREATE_UI_RESPONSE_UNVERIFIED")
+        if operation == "skip_startup_update":
+            if set(result) != {"ok", "operation", "skipped"} or (
+                type(result["skipped"]) is not bool
+            ):
+                raise RuntimeError("STARTUP_UPDATE_RESPONSE_UNVERIFIED")
+        elif "skipped" in result:
             raise RuntimeError("CREATE_UI_RESPONSE_UNVERIFIED")
         if operation != "begin" and result.get("dialog") is not None:
             token = result["dialog"]

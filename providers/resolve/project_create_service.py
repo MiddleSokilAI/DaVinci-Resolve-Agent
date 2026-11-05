@@ -65,11 +65,13 @@ class ProjectCreateError(RuntimeError):
         self, code: str, *, uncertain: bool = False,
         cause_code: str | None = None,
         bridge_dispatch_uncertain: bool | None = None,
+        startup_update_dispatch_uncertain: bool | None = None,
     ) -> None:
         self.code, self.uncertain = code, uncertain
         self.cause_code = cause_code
         self.bridge_dispatch_uncertain = bridge_dispatch_uncertain
-        cause = f" Bridge cause: {cause_code}." if cause_code is not None else ""
+        self.startup_update_dispatch_uncertain = startup_update_dispatch_uncertain
+        cause = f" Cause: {cause_code}." if cause_code is not None else ""
         super().__init__(
             f"Project creation: {code}.{cause} No creation action was repeated."
         )
@@ -131,6 +133,10 @@ def creation_receipts(profile: Profile) -> dict[Path, dict[str, Any]]:
             ):
                 raise ValueError("Receipt fields")
             validate_creation(value["name"], True, path.stem, 30)
+            if "startup_update_skipped" in value and (
+                type(value["startup_update_skipped"]) is not bool
+            ):
+                raise ValueError("Startup update evidence")
             _token(value.get("process"))
             before = value["before"]
             if (
@@ -227,6 +233,7 @@ class ProjectCreateService:
         self.catalogue = catalogue
         self.supervisor_factory = supervisor_factory
         self.client_factory = client_factory
+        self.startup_update_skipped = False
 
     def owns_key(self, key: str | None) -> bool:
         if not isinstance(key, str):
@@ -242,6 +249,30 @@ class ProjectCreateService:
             )
         return min(remaining, self.profile.native_timeout_seconds)
 
+    @staticmethod
+    def _startup_update_observed(observation: dict[str, Any]) -> bool:
+        """Route only the observed fixed update prompt; the driver revalidates it."""
+        process = observation.get("process") or {}
+        candidates = observation.get("window_candidates")
+        if (
+            observation.get("state") != "modal_blocked"
+            or process.get("window_title") != "Project Manager"
+            or process.get("project_name_hint") is not None
+            or process.get("window_state") == "minimized"
+            or not isinstance(candidates, list) or not 1 <= len(candidates) <= 64
+        ):
+            return False
+        return any(
+            isinstance(item, dict)
+            and item.get("pid") == process.get("pid")
+            and item.get("name") == "Software Update"
+            and item.get("class_name") == "UiAutoUpdateDialogImp"
+            and item.get("automation_id") == "UiAutoUpdateDialog"
+            and item.get("control_type") == "ControlType.Window"
+            and item.get("is_offscreen") is False
+            for item in candidates
+        )
+
     def _manager(self, deadline: float) -> dict[str, Any]:
         """Launch at most once and await Project Manager without opening history.
 
@@ -249,9 +280,11 @@ class ProjectCreateService:
         alone never owns the creation key; a later call can use that same key
         after a startup timeout. Creation intent is persisted before New Project.
         """
+        self.startup_update_skipped = False
         launched: subprocess.Popen[bytes] | None = None
         launched_pid: int | None = None
         observed_process: tuple[int, str, str] | None = None
+        update_manager_handle: int | None = None
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -266,8 +299,38 @@ class ProjectCreateService:
                 ):
                     raise ProjectCreateError("STARTUP_PROCESS_CHANGED")
                 observed_process = token
+                if update_manager_handle is not None and (
+                    process["window_handle"] != update_manager_handle
+                ):
+                    raise ProjectCreateError("STARTUP_WINDOW_CHANGED")
             if state == "project_manager" and process is not None:
                 return dict(process)
+            if process is not None and self._startup_update_observed(observation):
+                if update_manager_handle is None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise ProjectCreateError("PROJECT_MANAGER_STARTUP_TIMEOUT")
+                    update_manager_handle = process["window_handle"]
+                    try:
+                        skipped = self.ui.request(
+                            "skip_startup_update", process,
+                            timeout_seconds=min(20, remaining),
+                        )
+                        self.startup_update_skipped = skipped["skipped"] is True
+                    except (
+                        OSError, ValueError, RuntimeError, subprocess.TimeoutExpired
+                    ) as error:
+                        # Only Skip may have run. There is no creation intent
+                        # or Create dispatch, even if the Skip ack was lost.
+                        raise ProjectCreateError(
+                            "PROJECT_STARTUP_UPDATE_BLOCKED",
+                            cause_code=getattr(
+                                error, "detail", "UPDATE_RESPONSE_UNVERIFIED"),
+                            startup_update_dispatch_uncertain=getattr(
+                                error, "uncertain", True),
+                        ) from error
+                time.sleep(min(0.2, max(0, deadline - time.monotonic())))
+                continue
             if state == "resolve_not_running":
                 if observed_process is not None or (
                     launched is not None and launched.poll() is not None
@@ -383,6 +446,7 @@ class ProjectCreateService:
                     "name": name,
                     "phase": "dialog_pending",
                     "process": process,
+                    "startup_update_skipped": self.startup_update_skipped,
                     "before": {
                         "database": before["database"],
                         "projects": before["projects"],
@@ -470,6 +534,9 @@ class ProjectCreateService:
             raise ProjectCreateError("PROJECT_MANAGER_REQUIRED")
         receipt["previous_dialog_processes"] = [*history, receipt["process"]]
         receipt["process"] = process
+        receipt["startup_update_skipped"] = (
+            receipt.get("startup_update_skipped", False) or self.startup_update_skipped
+        )
         atomic_json(path, receipt)
 
     def _restore_empty_dialog(self, receipt: dict[str, Any], deadline: float) -> None:
@@ -677,6 +744,7 @@ class ProjectCreateService:
                 "proof_scope": "fresh_native_context",
                 "ui_create_dispatched": True,
                 "replayed": False,
+                "startup_update_skipped": receipt.get("startup_update_skipped", False),
                 "session": active["session"],
                 "generation": active["generation"],
             }
