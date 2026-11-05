@@ -249,3 +249,25 @@ def test_pending_close_blocks_skip_before_any_ui_inspection(tmp_path: Path) -> N
     with pytest.raises(ProjectCreateError, match="PROJECT_CLOSE_REQUIRES_RECOVERY"):
         f.create()
     assert not f.calls and not creation_receipts(f.profile)
+
+
+def test_skip_timeout_returns_definite_no_create_with_uncertain_skip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    f = update_fixture(tmp_path)
+
+    def timeout(operation: str, process: Any, **kwargs: Any) -> Any:
+        f.calls.append(operation)
+        raise subprocess.TimeoutExpired("fixed update adapter", 20)
+
+    f.request = timeout  # type: ignore[method-assign]
+    monkeypatch.setattr(creation_module, "ProjectCreateService", lambda _: f.service())
+    server = AutomaticServer(f.profile, start_worker=False)
+    result = asyncio.run(server.call_tool("resolve_create_project", dict(
+        name=PROJECT["name"], confirm_create=True, idempotency_key=KEY)))
+    assert result.is_error
+    assert result.structured_content["code"] == "PROJECT_STARTUP_UPDATE_BLOCKED"
+    assert result.structured_content["uncertain"] is False
+    assert result.structured_content["startup_update_dispatch_uncertain"] is True
+    assert f.calls == ["skip_startup_update"] and not creation_receipts(f.profile)
+    assert not list((f.profile.state_directory / "write-owners").glob("*.json"))

@@ -317,7 +317,9 @@ class ProjectCreateService:
                             timeout_seconds=min(20, remaining),
                         )
                         self.startup_update_skipped = skipped["skipped"] is True
-                    except (OSError, ValueError, RuntimeError) as error:
+                    except (
+                        OSError, ValueError, RuntimeError, subprocess.TimeoutExpired
+                    ) as error:
                         # Only Skip may have run. There is no creation intent
                         # or Create dispatch, even if the Skip ack was lost.
                         raise ProjectCreateError(
