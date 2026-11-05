@@ -83,13 +83,14 @@ def fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
         return native
 
     monkeypatch.setattr(module, "_native", read)
-    return worker, owner_path, owner, ledger_path, response_path, placeholder, reads
+    return (worker, owner_path, owner, ledger_path, response_path,
+            placeholder, reads, active)
 
 
 def test_original_key_recovers_acknowledged_close_and_replays_without_native_calls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    worker, path, owner, ledger, response, placeholder, reads = fixture(
+    worker, path, owner, ledger, response, placeholder, reads, _ = fixture(
         tmp_path, monkeypatch)
     expected = json.loads(
         (worker.root / "failed" / (owner["command_id"] + ".json")).read_text())
@@ -115,9 +116,8 @@ def test_exited_original_session_recovers_only_with_ack_and_two_absence_probes(
 ) -> None:
     import providers.resolve.windows_bootstrap as bootstrap
 
-    worker, path, owner, ledger, response, _, reads = fixture(tmp_path, monkeypatch)
-    active = module.read_active(worker.profile)
-    assert active is not None
+    worker, path, owner, ledger, response, _, reads, active = fixture(
+        tmp_path, monkeypatch)
     executable = "C:/Program Files/Blackmagic Design/DaVinci Resolve/Resolve.exe"
     monkeypatch.setattr(bootstrap, "_official_executable", lambda: executable)
     active.update(phase="resolve_absent", process={
@@ -151,7 +151,8 @@ def test_exited_original_session_recovers_only_with_ack_and_two_absence_probes(
         with pytest.raises(RuntimeError):
             module.recover_acknowledged_close(worker.profile, path, owner)
         assert all(p.read_bytes() == data for p, data in before.items())
-        assert close_intent(worker.profile)["phase"] == "pending"
+        intent = close_intent(worker.profile)
+        assert intent is not None and intent["phase"] == "pending"
     else:
         recovered = module.recover_acknowledged_close(worker.profile, path, owner)
         result = recovered["response"]["result"]
@@ -163,7 +164,8 @@ def test_exited_original_session_recovers_only_with_ack_and_two_absence_probes(
             (worker.root / "failed" / (owner["command_id"] + ".json")).read_text())
         worker.process(queued(
             worker, "close_project", command["arguments"], "original-close"))
-        assert close_intent(worker.profile)["phase"] == "closed"
+        intent = close_intent(worker.profile)
+        assert intent is not None and intent["phase"] == "closed"
         assert len(observations) == 2
     assert not reads
 
@@ -174,7 +176,7 @@ def test_exited_original_session_recovers_only_with_ack_and_two_absence_probes(
 def test_missing_proof_preserves_all_close_receipts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str,
 ) -> None:
-    worker, path, owner, ledger, response, placeholder, reads = fixture(
+    worker, path, owner, ledger, response, placeholder, reads, _ = fixture(
         tmp_path, monkeypatch)
     root = Path(owner["runtime"])
     if fault == "ack":
@@ -208,7 +210,7 @@ def test_missing_proof_preserves_all_close_receipts(
 def test_host_commit_crash_resumes_archived_proof_without_new_native_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    worker, path, owner, ledger, response, placeholder, reads = fixture(
+    worker, path, owner, ledger, response, placeholder, reads, _ = fixture(
         tmp_path, monkeypatch)
     original = atomic_json
 
@@ -239,7 +241,7 @@ def test_host_commit_crash_resumes_archived_proof_without_new_native_read(
 def test_expired_original_is_reconciled_without_extending_its_write_permission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    worker, path, owner, ledger, response, placeholder, reads = fixture(
+    worker, path, owner, ledger, response, placeholder, reads, _ = fixture(
         tmp_path, monkeypatch)
     original_path = worker.root / "failed" / (owner["command_id"] + ".json")
     command = json.loads(original_path.read_text())
