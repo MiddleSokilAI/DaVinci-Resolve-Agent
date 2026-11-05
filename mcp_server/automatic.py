@@ -283,6 +283,9 @@ class AutomaticServer(MCPServer[Any]):
             bridge_uncertain = getattr(error, "bridge_dispatch_uncertain", None)
             if type(bridge_uncertain) is bool:
                 evidence["bridge_dispatch_uncertain"] = bridge_uncertain
+            update_uncertain = getattr(error, "startup_update_dispatch_uncertain", None)
+            if type(update_uncertain) is bool:
+                evidence["startup_update_dispatch_uncertain"] = update_uncertain
             return CallToolResult(
                 content=[TextContent(type="text", text=json.dumps(evidence))],
                 structured_content=evidence,

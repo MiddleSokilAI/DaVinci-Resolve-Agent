@@ -28,12 +28,69 @@ function Invoke-Control($Item) {
     $script:dispatchStarted=$true
     $pattern.Invoke()
 }
+function Find-StartupUpdateSkip([object[]]$Roots,$Expected) {
+    if($Roots.Count -gt 32){Fail 'ROOT_BOUND'}
+    $managers=@(); $updates=@()
+    foreach($root in $Roots){
+        if($root.Current.IsOffscreen){continue}
+        if($root.Current.ProcessId -ne $Expected.pid -or
+           $root.Current.ControlType.ProgrammaticName -cne 'ControlType.Window'){
+            Fail 'STARTUP_WINDOW_CHANGED'
+        }
+        if($root.Current.AutomationId -ceq 'UiProjectManagerDialog' -and
+           $root.Current.ClassName -ceq 'ProjectManager::UiProjectManagerDialogImp' -and
+           $root.Current.Name -ceq 'Project Manager' -and
+           $root.Current.NativeWindowHandle -eq $Expected.window_handle){
+            $managers+=,$root
+        } elseif($root.Current.AutomationId -ceq 'UiAutoUpdateDialog' -and
+                 $root.Current.ClassName -ceq 'UiAutoUpdateDialogImp' -and
+                 $root.Current.Name -ceq 'Software Update' -and
+                 $root.Current.NativeWindowHandle -gt 0){
+            $updates+=,$root
+        } else {Fail 'UNRECOGNIZED_STARTUP_WINDOW'}
+        $nested=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+            [System.Windows.Automation.PropertyCondition]::new(
+                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [System.Windows.Automation.ControlType]::Window))
+        if($nested.Count -gt 32){Fail 'ROOT_BOUND'}
+        foreach($child in $nested){
+            if(!$child.Current.IsOffscreen){Fail 'NESTED_STARTUP_WINDOW'}
+        }
+    }
+    if($managers.Count -ne 1 -or $updates.Count -gt 1){Fail 'STARTUP_WINDOW_AMBIGUOUS'}
+    $managerWindow=$null
+    if(!$managers[0].TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern,[ref]$managerWindow) -or
+       $managerWindow.Current.WindowVisualState -eq [System.Windows.Automation.WindowVisualState]::Minimized -or
+       $managerWindow.Current.WindowInteractionState -notin @(
+            [System.Windows.Automation.WindowInteractionState]::Running,
+            [System.Windows.Automation.WindowInteractionState]::ReadyForUserInteraction,
+            [System.Windows.Automation.WindowInteractionState]::BlockedByModalWindow)){
+        Fail 'MANAGER_BLOCKED'
+    }
+    if(!$updates.Count){return $null}
+    $update=$updates[0]; $updateWindow=$null
+    if(!$update.Current.IsEnabled -or
+       !$update.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern,[ref]$updateWindow) -or
+       !(Test-CreationWindowReady $updateWindow)){Fail 'UPDATE_DIALOG_BLOCKED'}
+    $id='UiAutoUpdateDialog.DialogFrame.frameAutuUpdateContents.frameAutoUpdateButtonsContainer.btnSkipUpdate'
+    $button=Find-Control $update $id 'ControlType.Button'
+    if($button.Current.Name -cne 'Skip' -or $button.Current.ClassName -cne 'QPushButton'){
+        Fail 'SKIP_BUTTON_CHANGED'
+    }
+    return @{button=$button;identity=(($update.GetRuntimeId() -join ',')+';'+($button.GetRuntimeId() -join ','))}
+}
+function Invoke-ConfirmedStartupSkip($Found,$Confirmed) {
+    if($null -eq $Found -or $null -eq $Confirmed){return $false}
+    if($Found.identity -cne $Confirmed.identity){Fail 'UPDATE_DIALOG_CHANGED'}
+    Invoke-Control $Confirmed.button
+    return $true
+}
 try {
     $buffer=[char[]]::new(8193)
     $count=[Console]::In.ReadBlock($buffer,0,$buffer.Length)
     if($count -gt 8192){Fail 'REQUEST_BOUND'}
     $r=[string]::new($buffer,0,$count) | ConvertFrom-Json
-    if($r.operation -cnotin @('begin','inspect_dialog','create')){Fail 'INVALID_OPERATION'}
+    if($r.operation -cnotin @('begin','inspect_dialog','create','skip_startup_update')){Fail 'INVALID_OPERATION'}
     $keys=@('operation','process')
     if($r.operation -ceq 'create'){$keys+=@('dialog','name')}
     if(@($r.PSObject.Properties.Name).Count -ne $keys.Count -or
@@ -42,9 +99,31 @@ try {
     $official=Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Blackmagic Design\DaVinci Resolve\Resolve.exe'
     if($p.ProcessName -cne 'Resolve' -or $p.MainModule.FileName -ine $official -or
        $p.StartTime.ToUniversalTime().Ticks.ToString() -cne $r.process.creation_time){Fail 'PROCESS_CHANGED'}
+    if($r.process.window_title -cne 'Project Manager' -or $r.process.window_handle -le 0 -or
+       $r.process.project_name_hint -ne $null -or $r.process.window_state -ceq 'minimized'){
+        Fail 'MANAGER_CHANGED'
+    }
     $roots=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,
         [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ProcessIdProperty,$p.Id))
     if($roots.Count -gt 32){Fail 'ROOT_BOUND'}
+    if($r.operation -ceq 'skip_startup_update'){
+        $running=@(Get-Process -Name Resolve -ErrorAction Stop)
+        if($running.Count -ne 1 -or $running[0].Id -ne $p.Id){Fail 'PROCESS_AMBIGUOUS'}
+        $found=Find-StartupUpdateSkip @($roots) $r.process
+        if($null -ne $found){
+            $running=@(Get-Process -Name Resolve -ErrorAction Stop)
+            if($running.Count -ne 1 -or $running[0].Id -ne $p.Id){Fail 'PROCESS_AMBIGUOUS'}
+            $again=Get-Process -Id $r.process.pid
+            if($again.ProcessName -cne 'Resolve' -or $again.MainModule.FileName -ine $official -or
+               $again.StartTime.ToUniversalTime().Ticks.ToString() -cne $r.process.creation_time){Fail 'PROCESS_CHANGED'}
+            $fresh=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,
+                [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ProcessIdProperty,$p.Id))
+            $confirmed=Find-StartupUpdateSkip @($fresh) $r.process
+            $null=Invoke-ConfirmedStartupSkip $found $confirmed
+        }
+        @{ok=$true;operation='skip_startup_update';skipped=[bool]$script:dispatchStarted} | ConvertTo-Json -Compress
+        exit 0
+    }
     $dialogs=@($roots | Where-Object {$_.Current.AutomationId -ceq 'UiNewProjectOptionsDlg'})
     if($r.operation -ceq 'begin'){
         if($dialogs.Count){Fail 'DIALOG_ALREADY_PRESENT'}
