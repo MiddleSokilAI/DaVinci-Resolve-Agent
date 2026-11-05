@@ -14,7 +14,7 @@ from providers.resolve.marker_supervisor import Profile, read_active
 from providers.resolve.marker_transport import MarkerLeaseKeeper
 from providers.resolve.preset_channel import PresetSDKChannel
 from providers.resolve.remote_sdk import RemoteSDK
-from providers.resolve.windows_host import inspect_windows_host
+from providers.resolve.windows_bootstrap import WindowsBootstrapAdapter
 
 
 def _guard(path: Path) -> None:
@@ -42,6 +42,10 @@ def _native(root: Path, session: str, operation: dict[str, Any]) -> Any:
     return RemoteSDK(PresetSDKChannel(root, session, operation)).root()
 
 
+def _inspect_host() -> dict[str, Any]:
+    return WindowsBootstrapAdapter(enabled=True).inspect()
+
+
 def _close_readback(
     profile: Profile, active: dict[str, Any], root: Path,
     session: str, operation: dict[str, Any], expected: str,
@@ -59,12 +63,14 @@ def _close_readback(
     )}
     observations = []
     for _ in range(2):
-        observed = inspect_windows_host()
+        observed = _inspect_host()
         if (
-            observed.get("status") != "observed"
-            or observed.get("source") != "windows_process_metadata"
-            or observed.get("running") is not False
-            or observed.get("processes") != []
+            observed.get("ok") is not True
+            or observed.get("backend") != "windows_bootstrap"
+            or observed.get("operation") != "inspect"
+            or observed.get("state") != "resolve_not_running"
+            or observed.get("process") is not None
+            or observed.get("dispatch_started") is not False
         ):
             raise RuntimeError("ORIGINAL_CLOSE_PROCESS_EXIT_UNVERIFIED")
         observations.append(observed)

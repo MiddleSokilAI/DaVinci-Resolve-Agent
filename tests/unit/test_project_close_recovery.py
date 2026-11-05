@@ -129,19 +129,20 @@ def test_exited_original_session_recovers_only_with_ack_and_two_absence_probes(
     observations: list[dict[str, Any]] = []
 
     def host() -> dict[str, Any]:
-        value: dict[str, Any] = dict(status="observed", running=False,
-            source="windows_process_metadata", processes=[])
+        value: dict[str, Any] = dict(ok=True, backend="windows_bootstrap",
+            operation="inspect", state="resolve_not_running", process=None,
+            dispatch_started=False)
         if len(observations) == 1:
             if fault == "unavailable":
-                value.update(status="unavailable", running=None)
+                value.update(ok=False, state="unavailable")
             elif fault == "running":
-                value.update(running=True, processes=[{"pid": 999}])
+                value.update(state="project_window", process={"pid": 999})
             elif fault == "race":
                 active["generation"] = "changed"
         observations.append(value)
         return value
 
-    monkeypatch.setattr(module, "inspect_windows_host", host)
+    monkeypatch.setattr(module, "_inspect_host", host)
     monkeypatch.setattr(module, "_native", lambda *args: pytest.fail("Native call"))
     if fault == "ack":
         (Path(owner["runtime"]) / "sdk-trace/CloseProject.json").unlink()
