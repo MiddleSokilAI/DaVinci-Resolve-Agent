@@ -419,6 +419,30 @@ def test_pending_original_process_gone_requires_recovery(fixture: Fixture) -> No
     assert len(fixture.opens) == 1 and not fixture.native_calls
 
 
+@pytest.mark.parametrize("replacement", [False, True])
+def test_interrupted_open_keeps_original_key_after_hidden_process_exit(
+    fixture: Fixture, replacement: bool,
+) -> None:
+    fixture.bootstrap = False
+    key = "api-laws-uk-open-20261106"
+    with pytest.raises(ProjectOpenError, match="OPEN_OUTCOME_UNVERIFIED"):
+        fixture.open(idempotency_key=key)
+    path = fixture.receipt_path(key)
+    before = path.read_bytes()
+    fixture.ui_state = "resolve_not_running"
+    code = "ORIGINAL_PROCESS_EXITED"
+    if replacement:
+        # Even a reused PID and matching caption cannot rebind the old Open.
+        fixture.ui_state = "project_manager"
+        fixture.process["creation_time"] = "638999000000000001"
+        code = "ORIGINAL_PROCESS_CHANGED"
+    with pytest.raises(ProjectOpenError, match=code):
+        fixture.open(idempotency_key=key)
+    assert path.read_bytes() == before
+    assert list(path.parent.glob("*.json")) == [path]
+    assert len(fixture.opens) == 1 and not fixture.native_calls
+
+
 def test_pending_original_generation_cannot_migrate(fixture: Fixture) -> None:
     fixture.native_error = LuaCommandTimeoutError("d" * 32, 0.1)
     with pytest.raises(ProjectOpenError, match="OPEN_OUTCOME_UNVERIFIED"):

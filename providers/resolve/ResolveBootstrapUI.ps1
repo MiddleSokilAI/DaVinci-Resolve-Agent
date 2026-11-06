@@ -128,9 +128,13 @@ function Initialize-BootstrapRuntime {
     if (-not ('BootstrapNative' -as [type])) {
         Add-Type @'
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
 public static class BootstrapNative {
+    private delegate bool WindowCallback(IntPtr window, IntPtr data);
+    [DllImport("user32.dll", SetLastError=true)] private static extern bool EnumWindows(WindowCallback callback, IntPtr data);
+    [DllImport("user32.dll",CharSet=CharSet.Unicode)] private static extern int GetWindowText(IntPtr window,StringBuilder text,int size);
     [DllImport("user32.dll", SetLastError=true)] private static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
     [DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Unicode)] private static extern bool GetUserObjectInformation(IntPtr obj, int index, StringBuilder value, uint length, out uint needed);
     [DllImport("user32.dll")] private static extern bool CloseDesktop(IntPtr desktop);
@@ -140,6 +144,26 @@ public static class BootstrapNative {
     [DllImport("user32.dll")] private static extern bool BringWindowToTop(IntPtr window);
     [DllImport("user32.dll")] private static extern bool AttachThreadInput(uint source,uint target,bool attach);
     [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+    public static IntPtr[] WindowHandles(uint expectedProcess) {
+        var handles=new List<IntPtr>(); int visited=0; int owned=0; bool limit=false;
+        WindowCallback callback=delegate(IntPtr window,IntPtr data) {
+            if(++visited>4096) { limit=true; return false; }
+            uint process; GetWindowThreadProcessId(window,out process);
+            if(process==expectedProcess) {
+                if(++owned>64) { limit=true; return false; }
+                var title=new StringBuilder(512);
+                GetWindowText(window,title,title.Capacity);
+                // A caption is only a discovery hint. UIA and owner checks bind it.
+                if(title.ToString().StartsWith("DaVinci Resolve - ",StringComparison.Ordinal))
+                    handles.Add(window);
+            }
+            return true;
+        };
+        bool complete=EnumWindows(callback,IntPtr.Zero);
+        if(limit)throw new InvalidOperationException("BSUI_WINDOW_TREE_LIMIT");
+        if(!complete)throw new InvalidOperationException("BSUI_WINDOW_ENUMERATION_UNAVAILABLE");
+        return handles.ToArray();
+    }
     public static void ActivateWindow(IntPtr window,uint expectedProcess) {
         uint process;
         GetWindowThreadProcessId(window,out process);
@@ -210,7 +234,7 @@ function Add-BootstrapWindowCandidate($Window) {
     }
 }
 
-function Find-BootstrapMainInRoots([object[]]$Roots,[long]$ProcessId) {
+function Find-BootstrapMainInRoots([object[]]$Roots,[long]$ProcessId,[bool]$SearchDescendants=$true) {
     if ($Roots.Count -gt 64) { Fail-Bootstrap 'WINDOW_TREE_LIMIT' }
     $classCondition=[System.Windows.Automation.OrCondition]::new(
         [System.Windows.Automation.PropertyCondition]::new(
@@ -228,7 +252,9 @@ function Find-BootstrapMainInRoots([object[]]$Roots,[long]$ProcessId) {
         # Qt can expose the editor below a generic top-level Resolve container.
         # Search only that process's roots and the observed fixed editor identity.
         $candidates=@($root)
-        $candidates+=@($root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$windowCondition))
+        if ($SearchDescendants) {
+            $candidates+=@($root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$windowCondition))
+        }
         if ($candidates.Count -gt 64) { Fail-Bootstrap 'WINDOW_TREE_LIMIT' }
         foreach ($candidate in $candidates) {
             Add-BootstrapWindowCandidate $candidate
@@ -251,15 +277,60 @@ function Find-BootstrapMainInRoots([object[]]$Roots,[long]$ProcessId) {
     return $windows[0]
 }
 
-function Get-BootstrapMain([long]$ProcessId) {
-    # MainWindowHandle can identify Resolve's generic container instead. Bind the
-    # unique actual editor by UIA class and process, including minimized UI.
-    $script:WindowCandidates=@(); $script:WindowCandidatesTruncated=$false
-    $roots=@([System.Windows.Automation.AutomationElement]::RootElement.FindAll(
+function Get-BootstrapDesktopRoots([long]$ProcessId) {
+    return @([System.Windows.Automation.AutomationElement]::RootElement.FindAll(
         [System.Windows.Automation.TreeScope]::Children,
         [System.Windows.Automation.PropertyCondition]::new(
             [System.Windows.Automation.AutomationElement]::ProcessIdProperty,[int]$ProcessId)))
-    return Find-BootstrapMainInRoots $roots $ProcessId
+}
+
+function Get-BootstrapWindowHandles([long]$ProcessId) {
+    return [BootstrapNative]::WindowHandles([uint32]$ProcessId)
+}
+
+function Get-BootstrapHandleElement([long]$Handle,[long]$ProcessId) {
+    [uint32]$owner=0
+    $null=[BootstrapNative]::GetWindowThreadProcessId([IntPtr]::new($Handle),[ref]$owner)
+    if ($owner -ne $ProcessId) { Fail-Bootstrap 'WINDOW_IDENTITY_CHANGED' }
+    $element=[System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]::new($Handle))
+    $null=[BootstrapNative]::GetWindowThreadProcessId([IntPtr]::new($Handle),[ref]$owner)
+    if ($owner -ne $ProcessId -or $element.Current.ProcessId -ne $ProcessId -or
+        $element.Current.NativeWindowHandle -ne $Handle) { Fail-Bootstrap 'WINDOW_IDENTITY_CHANGED' }
+    return $element
+}
+
+function Get-BootstrapNativeEditors([long]$ProcessId) {
+    $handles=@(Get-BootstrapWindowHandles $ProcessId)
+    if ($handles.Count -gt 64) { Fail-Bootstrap 'WINDOW_TREE_LIMIT' }
+    $seen=@{}
+    foreach ($handle in $handles) {
+        $number=[long]$handle
+        if ($number -le 0) { Fail-Bootstrap 'WINDOW_IDENTITY_CHANGED' }
+        if ($seen.ContainsKey($number)) { continue }
+        $seen[$number]=$true
+        $element=Get-BootstrapHandleElement $number $ProcessId
+        $current=$element.Current
+        if ($current.ProcessId -ne $ProcessId -or $current.NativeWindowHandle -ne $number) {
+            Fail-Bootstrap 'WINDOW_IDENTITY_CHANGED'
+        }
+        # Hidden Qt editors are absent from desktop roots but accessible by HWND.
+        # Never promote a dormant, hidden Project Manager or a title-only match.
+        if ($current.ClassName -cin @('UiMainWindowImp','UiMainWindow') -and
+            $current.AutomationId -ceq 'UiMainWindow' -and
+            $current.ControlType -eq [System.Windows.Automation.ControlType]::Window) {
+            $element
+        }
+    }
+}
+
+function Get-BootstrapMain([long]$ProcessId) {
+    $script:WindowCandidates=@(); $script:WindowCandidatesTruncated=$false
+    $roots=@(Get-BootstrapDesktopRoots $ProcessId)
+    $main=Find-BootstrapMainInRoots $roots $ProcessId
+    if ($null -ne $main) { return $main }
+    # Read-only fallback: no show/restore, foreground, input or accessibility action.
+    $editors=@(Get-BootstrapNativeEditors $ProcessId)
+    return Find-BootstrapMainInRoots $editors $ProcessId $false
 }
 
 function Get-BootstrapWindowState($Main) {

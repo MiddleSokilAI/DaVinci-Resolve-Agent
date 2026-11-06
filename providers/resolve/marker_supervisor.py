@@ -744,7 +744,9 @@ class Supervisor:
             self._save(active)
             try:
                 with MarkerLeaseKeeper(root):
-                    self.adapter.invoke_managed_marker(root, process)
+                    self.adapter.invoke_managed_marker(
+                        root, process, background_only=True
+                    )
             except (OSError, ValueError, RuntimeError) as error:
                 reason = str(getattr(error, "code", type(error).__name__))[:128]
                 if getattr(error, "uncertain", True) is False:

@@ -69,7 +69,10 @@ class Adapter:
         self,
         root: Path,
         process: dict[str, Any],
+        *,
+        background_only: bool,
     ) -> dict[str, Any]:
+        assert background_only is True
         assert process == self.process
         assert self.profile is not None
         active = read_active(self.profile)
