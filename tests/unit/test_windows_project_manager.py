@@ -1617,7 +1617,6 @@ def test_composite_requires_export_identity_and_fresh_catalogue_before_one_open(
     assert calls == [
         "begin_candidate_search",
         "filter_candidate",
-        "select_filtered_candidate",
         "begin_candidate_export",
         "save",
         "open",
@@ -1629,6 +1628,130 @@ def test_composite_requires_export_identity_and_fresh_catalogue_before_one_open(
     assert state["dispatch_arguments"]["last_input_tick"] == 123
     assert state["catalogue_reads"] == 2
     assert result["native_connection_verified"] is False
+
+
+def test_mcp_open_never_uses_foreground_candidate_selection(
+    composite: tuple[WindowsProjectManagerAdapter, list[str], dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, calls, _ = composite
+
+    def forbidden(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("MCP Open must never activate, focus or send key messages")
+
+    monkeypatch.setattr(
+        WindowsProjectManagerAdapter, "select_filtered_candidate", forbidden
+    )
+    _open_composite(adapter)
+    assert calls.count("open") == 1
+
+
+@pytest.mark.parametrize(
+    "mode", ["missing_root", "duplicate", "wrong_process", "wrong_handle", "limit"]
+)
+def test_background_manager_fallback_is_bounded_and_owner_checked(mode: str) -> None:
+    result = _offline(
+        r"""
+        $data=ConvertFrom-Json ([Console]::In.ReadToEnd());$script:mode=$data.mode;
+        $script:reads=0;$script:inputCalls=0;
+        function Get-ProjectManagerNativeHandles {
+            param($processIdValue)return ,([IntPtr]::new(456))
+        }
+        function Get-ProjectManagerElementFromHandle {
+            param($handle)$script:reads++;
+            return [pscustomobject]@{Current=[pscustomobject]@{
+                ProcessId=if($script:mode -ceq 'wrong_process'){124}else{123};
+                NativeWindowHandle=if($script:mode -ceq 'wrong_handle'){789}else{456}}}
+        }
+        $roots=@();
+        if($data.mode -ceq 'duplicate'){
+            $roots+=,(Get-ProjectManagerElementFromHandle ([IntPtr]::new(456)))
+            $script:reads=0
+        }
+        if($data.mode -ceq 'limit'){
+            $roots=@(1..64|ForEach-Object {
+                [pscustomobject]@{Current=[pscustomobject]@{NativeWindowHandle=$_}}
+            })
+        }
+        $errorCode=$null;$merged=@();
+        try{$merged=@(Merge-ProjectManagerFallbackRoots $roots 123)}
+        catch{$errorCode=$_.Exception.Message}
+        @{count=$merged.Count;reads=$script:reads;error=$errorCode}|
+            ConvertTo-Json -Compress
+    """,
+        {"mode": mode},
+    )
+    if mode in {"wrong_process", "wrong_handle"}:
+        assert result["error"] == "PMUI_PROCESS_OR_WINDOW_CHANGED"
+    elif mode == "limit":
+        assert result["error"] == "PMUI_WINDOW_TREE_LIMIT"
+    else:
+        assert result["error"] is None and result["count"] == 1
+        assert result["reads"] == (0 if mode == "duplicate" else 1)
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "valid",
+        "wrong_pid",
+        "wrong_class",
+        "wrong_id",
+        "wrong_name",
+        "wrong_type",
+        "no_handle",
+        "ambiguous",
+        "same_runtime",
+    ],
+)
+def test_manager_caption_hint_never_bypasses_uia_identity(mode: str) -> None:
+    result = _offline(
+        r"""
+        Add-Type -AssemblyName UIAutomationClient
+        Add-Type -AssemblyName UIAutomationTypes
+        $data=ConvertFrom-Json ([Console]::In.ReadToEnd())
+        function New-FakeManager([int]$id) {
+            $item=[pscustomobject]@{Current=[pscustomobject]@{
+                ProcessId=if($data.mode -ceq 'wrong_pid'){124}else{123}
+                ClassName=if($data.mode -ceq 'wrong_class'){'Wrong'}else{
+                    'ProjectManager::UiProjectManagerDialogImp'}
+                AutomationId=if($data.mode -ceq 'wrong_id'){'Wrong'}else{
+                    'UiProjectManagerDialog'}
+                Name=if($data.mode -ceq 'wrong_name'){'Wrong'}else{'Project Manager'}
+                ControlType=if($data.mode -ceq 'wrong_type'){
+                    [System.Windows.Automation.ControlType]::Group
+                }else{[System.Windows.Automation.ControlType]::Window}
+                NativeWindowHandle=if($data.mode -ceq 'no_handle'){0}else{456}
+            };Identity=$id}
+            $item|Add-Member ScriptMethod FindAll {return @()}
+            $item|Add-Member ScriptMethod GetRuntimeId {return @(1,$this.Identity)}
+            return $item
+        }
+        $roots=@(New-FakeManager 1)
+        if($data.mode -cin @('ambiguous','same_runtime')){
+            $roots+=,(New-FakeManager $(if($data.mode -ceq 'same_runtime'){1}else{2}))
+        }
+        $found=$false;$code=$null
+        try{$found=($null -ne (Find-ProjectManager $roots 123))}
+        catch{$code=$_.Exception.Message}
+        @{found=$found;error=$code}|ConvertTo-Json -Compress
+    """,
+        {"mode": mode},
+    )
+    if mode == "ambiguous":
+        assert result["error"] == "PMUI_PROJECT_MANAGER_AMBIGUOUS"
+    else:
+        assert result["error"] is None
+        assert result["found"] is (mode in {"valid", "same_runtime"})
+
+
+def test_background_discovery_native_helper_compiles_without_desktop_access() -> None:
+    result = _offline(r"""
+        Initialize-ProjectManagerRuntime
+        @{present=($null -ne [ProjectManagerNative].GetMethod('ManagerHandles'))}|
+            ConvertTo-Json -Compress
+    """)
+    assert result["present"] is True
 
 
 def test_catalogue_refusal_survives_preflight_without_ui_dispatch(
@@ -1652,7 +1775,7 @@ def test_catalogue_refusal_survives_preflight_without_ui_dispatch(
 
 @pytest.mark.parametrize(
     "phase",
-    ["filter_candidate", "select_filtered_candidate", "begin_candidate_export", "save"],
+    ["filter_candidate", "begin_candidate_export", "save"],
 )
 def test_preflight_uncertainty_never_becomes_project_open_uncertainty(
     composite: tuple[WindowsProjectManagerAdapter, list[str], dict[str, Any]],
@@ -1705,23 +1828,22 @@ def test_uncertain_final_open_is_preserved_without_retry(
     assert calls.count("open") == 1
 
 
-def test_preflight_wrapper_preserves_numeric_foreground_stage_diagnostics(
+def test_preflight_wrapper_preserves_background_window_stage_diagnostics(
     composite: tuple[WindowsProjectManagerAdapter, list[str], dict[str, Any]],
 ) -> None:
     adapter, calls, state = composite
-    state["failure"] = "select_filtered_candidate"
+    state["failure"] = "filter_candidate"
     detail = {
-        "stage": "after_bin_reactivation",
-        "foreground_handle": 999,
-        "foreground_pid": 456,
-        "foreground_root_owner": 999,
+        "stage": "context_window",
+        "expected_handle": 456,
+        "observed_handle": 0,
     }
     state["failure_diagnostics"] = detail
     with pytest.raises(WindowsProjectManagerError) as error:
         _open_composite(adapter)
     assert error.value.diagnostics == {
         **detail,
-        "preflight_operation": "select_filtered_candidate",
+        "preflight_operation": "filter_candidate",
     }
     assert not error.value.uncertain and not error.value.project_open_requested
     assert "open" not in calls
