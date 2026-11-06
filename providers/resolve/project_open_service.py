@@ -28,6 +28,7 @@ from providers.resolve.marker_supervisor import (
     OperationBusy,
     Profile,
     Supervisor,
+    _lock,
     operation_lock,
     project_open_lock,
     read_active,
@@ -100,6 +101,121 @@ def _saved_process(process: dict[str, Any]) -> dict[str, Any]:
     return {key: process[key] for key in ("pid", "creation_time", "executable_path")}
 
 
+def _validate_receipt_value(value: Any, key_hash: str, *, history: bool = True) -> None:
+    """Validate a live receipt and bounded, non-recursive prior-attempt snapshots."""
+    if (
+        not isinstance(value, dict)
+        or type(value.get("schema")) is not int
+        or value["schema"] not in {1, 2}
+        or value.get("action") != "open_existing_project"
+        or value.get("status") not in _STATUSES
+        or value.get("key_hash") != key_hash
+        or not re.fullmatch(r"[0-9a-f]{64}", key_hash)
+        or not isinstance(value.get("fingerprint"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", value["fingerprint"])
+        or not isinstance(value.get("arguments"), dict)
+    ):
+        raise ValueError("Invalid receipt fields.")
+    arguments = value["arguments"]
+    normalized = validate_project_context_request(
+        {
+            "expected_database": arguments.get("expected_database"),
+            "expected_folder": "",
+            "expected_project_name": arguments.get("project_name"),
+        },
+        arguments.get("expected_project_id"),
+    )
+    expected_arguments = {
+        "project_name": normalized["expected_project_name"],
+        "expected_project_id": arguments.get("expected_project_id"),
+        "expected_database": normalized["expected_database"],
+        "folder_path": [],
+    }
+    if (
+        arguments != expected_arguments
+        or _fingerprint(arguments) != value["fingerprint"]
+    ):
+        raise ValueError("Receipt intent mismatch.")
+    _token(value.get("process"))
+    binding = value.get("native_binding")
+    if binding is not None and (
+        not isinstance(binding, dict)
+        or set(binding) != {"runtime", "session", "generation"}
+        or any(not isinstance(binding[key], str) or not binding[key] for key in binding)
+    ):
+        raise ValueError("Invalid native binding.")
+    if value["status"] == "completed":
+        result = value.get("result")
+        if (
+            not isinstance(result, dict)
+            or binding is None
+            or result.get("project")
+            != {
+                "id": arguments["expected_project_id"],
+                "name": arguments["project_name"],
+            }
+            or result.get("database") != arguments["expected_database"]
+            or result.get("folder") != ""
+            or result.get("context_verified") is not True
+            or result.get("folder_membership_verified") is not True
+            or result.get("native_connection_verified") is not True
+            or result.get("source") != "live_lua_api"
+            or result.get("readback_verified_by") != "ResolveLuaProjectContext"
+            or result.get("proof_scope") != "fresh_native_context"
+            or result.get("session") != binding["session"]
+            or result.get("generation") != binding["generation"]
+            or type(result.get("no_op")) is not bool
+            or result.get("ui_open_dispatched") is not (not result["no_op"])
+        ):
+            raise ValueError("Completed outcome missing or inconsistent.")
+    if value["status"] == "rejected" and not isinstance(value.get("error"), str):
+        raise ValueError("Rejected outcome missing.")
+    if "cause_code" in value and (
+        not isinstance(value["cause_code"], str)
+        or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", value["cause_code"])
+    ):
+        raise ValueError("Invalid refusal cause.")
+
+    if value["schema"] == 2:
+        if type(value.get("recovery_no_op")) is not bool:
+            raise ValueError("Recovery dispatch classification missing.")
+        if history:
+            previous = value.get("previous_attempts")
+            if not isinstance(previous, list) or not 1 <= len(previous) <= 8:
+                raise ValueError("Recovery history missing or exceeds bound.")
+            processes = {_token(value["process"])}
+            for entry in previous:
+                if not isinstance(entry, dict) or set(entry) != {
+                    "receipt_json",
+                    "sha256",
+                }:
+                    raise ValueError("Invalid prior attempt.")
+                data = entry["receipt_json"]
+                if (
+                    not isinstance(data, str)
+                    or len(data.encode("utf-8")) > _MAX_RECEIPT_BYTES
+                    or hashlib.sha256(data.encode("utf-8")).hexdigest()
+                    != entry["sha256"]
+                ):
+                    raise ValueError("Prior receipt digest mismatch.")
+                prior = json.loads(data.lstrip("\ufeff"), object_pairs_hook=_object)
+                if "previous_attempts" in prior:
+                    raise ValueError("Nested recovery history is not accepted.")
+                _validate_receipt_value(prior, key_hash, history=False)
+                prior_process = _token(prior["process"])
+                if prior_process in processes:
+                    raise ValueError("Recovery history repeats a process identity.")
+                processes.add(prior_process)
+                if (
+                    prior["fingerprint"] != value["fingerprint"]
+                    or prior["arguments"] != value["arguments"]
+                    or prior["status"] not in _PENDING
+                ):
+                    raise ValueError("Prior attempt intent changed.")
+    elif "previous_attempts" in value or "recovery_no_op" in value:
+        raise ValueError("Recovery requires the versioned receipt contract.")
+
+
 def _receipt(path: Path) -> dict[str, Any]:
     _unlinked(path)
     try:
@@ -108,80 +224,8 @@ def _receipt(path: Path) -> dict[str, Any]:
         if len(raw) > _MAX_RECEIPT_BYTES:
             raise ValueError("Receipt exceeds its bound.")
         value = json.loads(raw.decode("utf-8-sig"), object_pairs_hook=_object)
-        if (
-            not isinstance(value, dict)
-            or type(value.get("schema")) is not int
-            or value["schema"] != 1
-            or value.get("action") != "open_existing_project"
-            or value.get("status") not in _STATUSES
-            or value.get("key_hash") != path.stem
-            or not re.fullmatch(r"[0-9a-f]{64}", path.stem)
-            or not isinstance(value.get("fingerprint"), str)
-            or not re.fullmatch(r"[0-9a-f]{64}", value["fingerprint"])
-            or not isinstance(value.get("arguments"), dict)
-        ):
-            raise ValueError("Invalid receipt fields.")
-        arguments = value["arguments"]
-        normalized = validate_project_context_request(
-            {
-                "expected_database": arguments.get("expected_database"),
-                "expected_folder": "",
-                "expected_project_name": arguments.get("project_name"),
-            },
-            arguments.get("expected_project_id"),
-        )
-        expected_arguments = {
-            "project_name": normalized["expected_project_name"],
-            "expected_project_id": arguments.get("expected_project_id"),
-            "expected_database": normalized["expected_database"],
-            "folder_path": [],
-        }
-        if (
-            arguments != expected_arguments
-            or _fingerprint(arguments) != value["fingerprint"]
-        ):
-            raise ValueError("Receipt intent mismatch.")
-        _token(value.get("process"))
-        binding = value.get("native_binding")
-        if binding is not None and (
-            not isinstance(binding, dict)
-            or set(binding) != {"runtime", "session", "generation"}
-            or any(
-                not isinstance(binding[key], str) or not binding[key] for key in binding
-            )
-        ):
-            raise ValueError("Invalid native binding.")
-        if value["status"] == "completed":
-            result = value.get("result")
-            if (
-                not isinstance(result, dict)
-                or binding is None
-                or result.get("project")
-                != {
-                    "id": arguments["expected_project_id"],
-                    "name": arguments["project_name"],
-                }
-                or result.get("database") != arguments["expected_database"]
-                or result.get("folder") != ""
-                or result.get("context_verified") is not True
-                or result.get("folder_membership_verified") is not True
-                or result.get("native_connection_verified") is not True
-                or result.get("source") != "live_lua_api"
-                or result.get("readback_verified_by") != "ResolveLuaProjectContext"
-                or result.get("proof_scope") != "fresh_native_context"
-                or result.get("session") != binding["session"]
-                or result.get("generation") != binding["generation"]
-                or type(result.get("no_op")) is not bool
-                or result.get("ui_open_dispatched") is not (not result["no_op"])
-            ):
-                raise ValueError("Completed outcome missing or inconsistent.")
-        if value["status"] == "rejected" and not isinstance(value.get("error"), str):
-            raise ValueError("Rejected outcome missing.")
-        if "cause_code" in value and (
-            not isinstance(value["cause_code"], str)
-            or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", value["cause_code"])
-        ):
-            raise ValueError("Invalid refusal cause.")
+        _validate_receipt_value(value, path.stem)
+        assert isinstance(value, dict)
         return value
     except (OSError, ValueError, RecursionError, TypeError) as error:
         raise ProjectOpenError("HOST_RECEIPT_INVALID", uncertain=True) from error
@@ -258,6 +302,7 @@ class ProjectOpenService:
         client_factory: Callable[[Path], Any] = LuaSnapshotClient,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        startup: Callable[[float, str], dict[str, Any]] | None = None,
     ) -> None:
         self.profile = profile
         self.adapter = adapter or WindowsProjectManagerAdapter(
@@ -267,6 +312,127 @@ class ProjectOpenService:
         self.supervisor_factory = supervisor_factory
         self.client_factory = client_factory
         self.clock, self.sleep = clock, sleep
+        self.startup = startup or self._startup
+
+    def _startup(self, deadline: float, project_name: str) -> dict[str, Any]:
+        """Use the same bounded startup as creation, without any Create/Open call."""
+        from providers.resolve.project_manager_startup import (
+            ProjectStartupError,
+            await_project_window,
+        )
+        from providers.resolve.windows_bootstrap import (
+            WindowsBootstrapAdapter,
+            _official_executable,
+        )
+        from providers.resolve.windows_project_create import WindowsProjectCreateAdapter
+
+        host = WindowsBootstrapAdapter(enabled=self.profile.enabled)
+        ui = WindowsProjectCreateAdapter()
+
+        def skip_update(process: dict[str, Any], timeout: float) -> dict[str, Any]:
+            return ui.request("skip_startup_update", process, timeout_seconds=timeout)
+
+        try:
+            return await_project_window(
+                deadline=deadline,
+                inspect=host.inspect,
+                skip_update=skip_update,
+                official_executable=_official_executable,
+                process_token=_token,
+                clock=self.clock,
+                sleep=self.sleep,
+                expected_project_name=project_name,
+            )
+        except ProjectStartupError as error:
+            raise ProjectOpenError(error.code, cause_code=error.cause_code) from error
+
+    def _recover_exited(
+        self,
+        path: Path,
+        receipt: dict[str, Any],
+        deadline: float,
+    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        """Keep the key/history; rebind only after proving the original process gone.
+
+        Caller owns project_open_lock. No native write, receipt reset or second
+        Open is allowed while the original process token is still observable.
+        Startup failure leaves the original receipt unchanged.
+        """
+        with self._operation_until(deadline):
+            observed = self.adapter.inspect()
+            current = observed.get("process")
+            if current is not None and _token(current) == _token(receipt["process"]):
+                return None
+            if observed.get("state") not in {
+                "resolve_not_running",
+                "project_manager",
+                "project_manager_unavailable",
+            } or (observed["state"] != "resolve_not_running" and current is None):
+                raise ProjectOpenError(
+                    "ORIGINAL_PROCESS_EXIT_UNVERIFIED", uncertain=True
+                )
+            self._native_clear(receipt["key_hash"])
+            if _receipt(path) != receipt:
+                raise ProjectOpenError("ORIGINAL_RECEIPT_CHANGED", uncertain=True)
+            snapshot = {k: v for k, v in receipt.items() if k != "previous_attempts"}
+            data = json.dumps(
+                snapshot, ensure_ascii=False, sort_keys=True, allow_nan=False
+            )
+            if not receipt.get("previous_attempts"):
+                # Preserve the first original receipt byte for byte, including
+                # its whitespace and UTF-8 BOM, inside the bounded history.
+                data = path.read_bytes().decode("utf-8")
+            previous = [
+                *receipt.get("previous_attempts", []),
+                {
+                    "receipt_json": data,
+                    "sha256": hashlib.sha256(data.encode("utf-8")).hexdigest(),
+                },
+            ]
+            if len(previous) > 8 or len(data.encode("utf-8")) > _MAX_RECEIPT_BYTES:
+                raise ProjectOpenError("RECOVERY_HISTORY_LIMIT")
+            try:
+                with _lock(self.profile, "connection.lock"):
+                    ready = self.startup(deadline, receipt["arguments"]["project_name"])
+            except OperationBusy as error:
+                raise ProjectOpenError("PROJECT_STARTUP_BUSY") from error
+            process = ready["process"]
+            if _token(process) == _token(receipt["process"]):
+                raise ProjectOpenError(
+                    "ORIGINAL_PROCESS_EXIT_UNVERIFIED", uncertain=True
+                )
+            if ready["state"] == "project_manager":
+                ready = self.adapter.inspect()
+                if (
+                    ready.get("state") != "project_manager"
+                    or ready.get("eligible") is not True
+                    or _token(ready.get("process")) != _token(process)
+                ):
+                    raise ProjectOpenError("PROJECT_MANAGER_CHANGED")
+            elif (
+                ready["state"] != "project_window"
+                or process.get("project_name_hint")
+                != receipt["arguments"]["project_name"]
+            ):
+                raise ProjectOpenError("RECOVERY_TARGET_UNVERIFIED")
+            candidate = {
+                k: v
+                for k, v in receipt.items()
+                if k not in {"result", "error", "cause_code", "last_error"}
+            }
+            candidate.update(
+                schema=2,
+                process=_saved_process(process),
+                native_binding=None,
+                status="prepared",
+                previous_attempts=previous,
+                recovery_no_op=ready["state"] == "project_window",
+            )
+            encoded = json.dumps(candidate, ensure_ascii=False, sort_keys=True)
+            if len(encoded.encode("utf-8")) > _MAX_RECEIPT_BYTES:
+                raise ProjectOpenError("RECOVERY_HISTORY_LIMIT")
+            _validate_receipt_value(candidate, path.stem)
+            return candidate, ready
 
     @contextmanager
     def _operation_until(self, deadline: float) -> Iterator[None]:
@@ -441,6 +607,9 @@ class ProjectOpenService:
             "proof_scope": "fresh_native_context",
             "replayed": False,
         }
+        if receipt.get("schema") == 2:
+            result["recovered_after_process_exit"] = True
+            result["previous_attempt_count"] = len(receipt["previous_attempts"])
         receipt.update(
             status="completed", native_binding=self._binding(active), result=result
         )
@@ -514,7 +683,11 @@ class ProjectOpenService:
                             ) from error
                         else:
                             return self._complete(
-                                path, receipt, active, proof, no_op=False
+                                path,
+                                receipt,
+                                active,
+                                proof,
+                                no_op=receipt.get("recovery_no_op", False),
                             )
             except OperationBusy:
                 pass
@@ -534,6 +707,7 @@ class ProjectOpenService:
         folder_path: list[str] | None = None,
         idempotency_key: str,
         confirm: bool = False,
+        confirm_recover_exited_process: bool = False,
         timeout_seconds: float = 120,
     ) -> dict[str, Any]:
         """Select once, then require native context; retries never repeat Open."""
@@ -541,6 +715,8 @@ class ProjectOpenService:
             raise ProjectOpenError("OPT_IN_REQUIRED")
         if confirm is not True:
             raise ProjectOpenError("CONFIRMATION_REQUIRED")
+        if type(confirm_recover_exited_process) is not bool:
+            raise ValueError("confirm_recover_exited_process must be a boolean.")
         if folder_path is not None and (
             not isinstance(folder_path, list) or folder_path
         ):
@@ -608,29 +784,44 @@ class ProjectOpenService:
                             "ANOTHER_PROJECT_OPEN_PENDING", uncertain=True
                         )
                 if receipt is None:
+                    if confirm_recover_exited_process:
+                        raise ProjectOpenError("RECOVERY_REQUIRES_ORIGINAL_RECEIPT")
                     self._native_clear(digest)
+            recovered = False
+            observation: dict[str, Any]
             if receipt is not None:
-                return self._wait(path, receipt, deadline)
-            try:
-                observation = self.adapter.inspect()
-            except (OSError, ValueError, RuntimeError) as error:
-                raise ProjectOpenError(
-                    "PROJECT_MANAGER_INSPECTION_UNAVAILABLE"
-                ) from error
-            process = observation.get("process")
-            if process is None:
-                raise ProjectOpenError("PROJECT_MANAGER_PROCESS_UNVERIFIED")
-            token = _saved_process(process)
-            receipt = {
-                "schema": 1,
-                "action": "open_existing_project",
-                "key_hash": digest,
-                "fingerprint": fingerprint,
-                "arguments": arguments,
-                "status": "prepared",
-                "process": token,
-                "native_binding": None,
-            }
+                recovery = (
+                    self._recover_exited(path, receipt, deadline)
+                    if confirm_recover_exited_process
+                    else None
+                )
+                if recovery is None:
+                    return self._wait(path, receipt, deadline)
+                receipt, observation = recovery
+                recovered = True
+            if not recovered:
+                try:
+                    observation = self.adapter.inspect()
+                except (OSError, ValueError, RuntimeError) as error:
+                    raise ProjectOpenError(
+                        "PROJECT_MANAGER_INSPECTION_UNAVAILABLE"
+                    ) from error
+                process = observation.get("process")
+                if process is None:
+                    raise ProjectOpenError("PROJECT_MANAGER_PROCESS_UNVERIFIED")
+                receipt = {
+                    "schema": 1,
+                    "action": "open_existing_project",
+                    "key_hash": digest,
+                    "fingerprint": fingerprint,
+                    "arguments": arguments,
+                    "status": "prepared",
+                    "process": _saved_process(process),
+                    "native_binding": None,
+                }
+            assert receipt is not None
+            process = observation["process"]
+            attach_only = recovered and receipt["recovery_no_op"]
             with self._operation_until(deadline):
                 self._native_clear(digest)
                 active = read_active(self.profile)
@@ -652,7 +843,7 @@ class ProjectOpenService:
                         atomic_json(path, receipt)
                         raise ProjectOpenError("ACTIVE_CONTEXT_UNVERIFIED") from error
                     return self._complete(path, receipt, active, proof, no_op=True)
-                if (
+                if not attach_only and (
                     observation.get("state") != "project_manager"
                     or observation.get("eligible") is not True
                 ):
@@ -663,8 +854,12 @@ class ProjectOpenService:
                     raise ProjectOpenError("UI_LIBRARY_TYPE_UNSUPPORTED")
                 if self.clock() >= deadline:
                     raise ProjectOpenError("OPEN_DEADLINE_BEFORE_DISPATCH")
-                receipt["status"] = "dispatch_started"
+                receipt["status"] = (
+                    "awaiting_native" if attach_only else "dispatch_started"
+                )
                 atomic_json(path, receipt)
+            if attach_only:
+                return self._wait(path, receipt, deadline)
             try:
                 self.adapter.open_existing(
                     process,

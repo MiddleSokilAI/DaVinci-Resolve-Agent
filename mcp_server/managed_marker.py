@@ -272,6 +272,9 @@ class ManagedMarkerServer(MCPServer[Any]):
                 "fresh native library/root-folder/project identity. No Computer "
                 "Use, project creation, import, database reset or recording. "
                 "A prior uncertain key is reconciled without reopening."
+                " Explicit confirm_recover_exited_process permits a new attempt "
+                "only after the original process has exited; "
+                "history and key stay owned."
             ),
             input_schema={
                 "type": "object", "additionalProperties": False,
@@ -293,6 +296,13 @@ class ManagedMarkerServer(MCPServer[Any]):
                     "idempotency_key": {"type": "string", "minLength": 1,
                                         "maxLength": 128},
                     "confirm": {"type": "boolean", "default": False},
+                    "confirm_recover_exited_process": {
+                        "type": "boolean", "default": False,
+                        "description": (
+                            "Explicit consent to recover this same key after "
+                            "verified process exit, preserving prior attempts."
+                        ),
+                    },
                     "timeout_seconds": {"type": "number", "minimum": 1,
                                         "maximum": 180, "default": 120},
                 },
