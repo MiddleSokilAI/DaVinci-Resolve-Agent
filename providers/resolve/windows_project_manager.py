@@ -361,7 +361,9 @@ class WindowsProjectManagerAdapter:
             self._phase_adapter(deadline).filter_candidate(process, **arguments)
             # Qt may expose no project rows or SelectionItemPattern. Never use
             # focus/activation or Home/Down messages as a fallback in MCP Open.
-            # Probe the existing selection after the exact-name filter instead.
+            # The fixed export actor requires one readable, exact selected row
+            # after filtering. Unsupported/empty selection refuses before Invoke;
+            # it is never probed by blindly pressing Export and waiting.
             # Only its fresh exported UUID/name can authorize the final Open.
             saved = self._phase_adapter(deadline)._export_candidate(
                 process, destination=candidate

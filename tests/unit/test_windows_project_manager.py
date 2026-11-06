@@ -1095,7 +1095,10 @@ def test_pattern_diagnostic_response_is_structurally_bounded(
 
 
 @pytest.mark.parametrize(
-    "mode", ["owned", "ambiguous", "input_changed", "process_changed", "invoke_failed"]
+    "mode", [
+        "owned", "ambiguous", "input_changed", "process_changed", "invoke_failed",
+        "selection_unavailable", "selection_changed", "input_before_invoke",
+    ]
 )
 def test_export_begin_uses_only_export_and_accepts_one_new_owned_dialog(
     mode: str,
@@ -1107,6 +1110,7 @@ def test_export_begin_uses_only_export_and_accepts_one_new_owned_dialog(
         $data=ConvertFrom-Json ([Console]::In.ReadToEnd());
         $script:Mode=$data.mode;$script:Clicked=$false;$script:Clicks=0;
         $script:ExportTouched=$false;$script:OpenDispatched=$false;$script:ModeChecks=0;
+        $script:SelectionReads=0;
         function New-Window($Handle) {
             $item=[pscustomobject]@{Handle=$Handle;Current=[pscustomobject]@{
                 ProcessId=123;NativeWindowHandle=$Handle;IsOffscreen=$false;IsEnabled=$true;
@@ -1125,6 +1129,15 @@ def test_export_begin_uses_only_export_and_accepts_one_new_owned_dialog(
         }
         function Assert-ProjectManagerLocalMode {
             param($manager,$pidValue)$script:ModeChecks++
+        }
+        function Read-ProjectManagerExportSelection {
+            param($manager,$pidValue)$script:SelectionReads++;
+            if($script:Mode -ceq 'selection_unavailable'){
+                Fail-ProjectManager 'PROJECT_SELECTION_UNAVAILABLE'
+            }
+            $id=if($script:Mode -ceq 'selection_changed' -and
+                $script:SelectionReads -eq 2){999}else{42};
+            return @{project_name='Existing';runtime_id=@(42,$id)}
         }
         function Find-ProjectManagerActionButton {
             param($manager,$action,$pidValue)
@@ -1151,6 +1164,8 @@ def test_export_begin_uses_only_export_and_accepts_one_new_owned_dialog(
         }
         function Get-ProjectManagerOwnerChain {param($handle)return @(456)}
         function Get-ProjectManagerInputTick {
+            if($script:Mode -ceq 'input_before_invoke' -and
+                $script:SelectionReads -eq 2){return 124}
             if($script:Mode -ceq 'input_changed' -and $script:Clicked){return 124}
             return 123
         }
@@ -1176,14 +1191,112 @@ def test_export_begin_uses_only_export_and_accepts_one_new_owned_dialog(
     """,
         {"mode": mode, "process": process()},
     )
-    assert result["clicks"] == 1
+    before_invoke = mode in {
+        "selection_unavailable", "selection_changed", "input_before_invoke"
+    }
+    assert result["clicks"] == (0 if before_invoke else 1)
     assert result["mode_checks"] == 1
     assert result["open_dispatched"] is False
-    assert result["export_touched"] is True
+    assert result["export_touched"] is (not before_invoke)
     assert result["failed"] is (mode != "owned")
     if mode == "owned":
         assert result["evidence"]["project_open_requested"] is False
         assert result["evidence"]["dialog"]["handle"] == 789
+
+
+@pytest.mark.parametrize(
+    "mode,expected",
+    [
+        ("selected", None),
+        ("bin_pattern_missing", "PROJECT_SELECTION_UNAVAILABLE"),
+        ("empty", "PROJECT_SELECTION_REQUIRED"),
+        ("multiple", "PROJECT_SELECTION_AMBIGUOUS"),
+        ("wrong_name", "PROJECT_SELECTION_UNVERIFIED"),
+        ("wrong_process", "PROJECT_SELECTION_UNVERIFIED"),
+        ("disabled", "PROJECT_SELECTION_UNVERIFIED"),
+        ("offscreen", "PROJECT_SELECTION_UNVERIFIED"),
+        ("wrong_type", "PROJECT_SELECTION_UNVERIFIED"),
+        ("item_pattern_missing", "PROJECT_SELECTION_UNAVAILABLE"),
+        ("not_selected", "PROJECT_SELECTION_UNVERIFIED"),
+        ("wrong_container", "PROJECT_SELECTION_UNVERIFIED"),
+        ("invalid_runtime_id", "PROJECT_SELECTION_UNVERIFIED"),
+    ],
+)
+def test_export_requires_readable_exact_selection_without_input(
+    mode: str, expected: str | None
+) -> None:
+    result = _offline(
+        r"""
+        Add-Type -AssemblyName UIAutomationClient;
+        Add-Type -AssemblyName UIAutomationTypes;Add-Type -AssemblyName WindowsBase;
+        $data=ConvertFrom-Json ([Console]::In.ReadToEnd());$script:Mode=$data.mode;
+        $script:OperationDiagnostics=@{};
+        $bin=[pscustomobject]@{Current=[pscustomobject]@{ProcessId=123}};
+        $bin|Add-Member ScriptMethod GetRuntimeId {return [int[]]@(42,1)};
+        $other=[pscustomobject]@{Current=[pscustomobject]@{ProcessId=123}};
+        $other|Add-Member ScriptMethod GetRuntimeId {return [int[]]@(42,999)};
+        $row=[pscustomobject]@{Current=[pscustomobject]@{
+            ProcessId=$(if($script:Mode -ceq 'wrong_process'){999}else{123});
+            Name=$(if($script:Mode -ceq 'wrong_name'){'Other'}else{'Existing'});
+            IsEnabled=($script:Mode -cne 'disabled');
+            IsOffscreen=($script:Mode -ceq 'offscreen');
+            ControlType=$(if($script:Mode -ceq 'wrong_type'){
+                [System.Windows.Automation.ControlType]::Button
+            }else{[System.Windows.Automation.ControlType]::ListItem})
+        }};
+        $row|Add-Member ScriptMethod GetRuntimeId {
+            if($script:Mode -ceq 'invalid_runtime_id'){return [int[]]@()}
+            return [int[]]@(42,2)
+        };
+        $container=if($script:Mode -ceq 'wrong_container'){$other}else{$bin};
+        $script:ItemPattern=[pscustomobject]@{Current=[pscustomobject]@{
+            IsSelected=($script:Mode -cne 'not_selected');SelectionContainer=$container
+        }};
+        $row|Add-Member ScriptMethod TryGetCurrentPattern {
+            param($pattern,$output)
+            if($pattern -ne [System.Windows.Automation.SelectionItemPattern]::Pattern){
+                throw 'Unexpected row pattern'
+            }
+            if($script:Mode -ceq 'item_pattern_missing'){return $false}
+            $output.Value=$script:ItemPattern;return $true
+        };
+        $items=if($script:Mode -ceq 'empty'){@()}elseif(
+            $script:Mode -ceq 'multiple'){@($row,$row)}else{@($row)};
+        $information=[pscustomobject]@{Items=@($items)};
+        $information|Add-Member ScriptMethod GetSelection {return @($this.Items)};
+        $script:Selection=[pscustomobject]@{Current=$information};
+        $bin|Add-Member ScriptMethod TryGetCurrentPattern {
+            param($pattern,$output)
+            if($pattern -ne [System.Windows.Automation.SelectionPattern]::Pattern){
+                throw 'Unexpected bin pattern'
+            }
+            if($script:Mode -ceq 'bin_pattern_missing'){return $false}
+            $output.Value=$script:Selection;return $true
+        };
+        $script:Bin=$bin;
+        function Find-ProjectManagerProjectBin {
+            param($manager,$value)return $script:Bin}
+        function Read-ProjectManagerSearchState {param($manager,$value)
+            return @{Value='Existing';Criteria='Name'}}
+        foreach($element in @($bin,$row,$script:ItemPattern)){
+            foreach($method in @('Invoke','Select','SetFocus','SetValue')){
+                $element|Add-Member ScriptMethod $method {throw 'Forbidden UI action'}
+            }
+        }
+        $code=$null;$proof=$null;
+        try{$proof=Read-ProjectManagerExportSelection ([object]::new()) 123}
+        catch{$code=$_.Exception.Message}
+        @{code=$code;proof=$proof;stage=$script:OperationDiagnostics.stage}|
+            ConvertTo-Json -Depth 4 -Compress
+    """,
+        {"mode": mode},
+    )
+    assert result["code"] == ("PMUI_" + expected if expected else None)
+    assert result["stage"] == "export_selection"
+    if expected is None:
+        assert result["proof"] == {"project_name": "Existing", "runtime_id": [42, 2]}
+    else:
+        assert result["proof"] is None
 
 
 def test_background_export_dispatch_compiles_and_invokes_only_synthetic_pattern() -> (

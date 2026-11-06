@@ -881,6 +881,47 @@ function Get-ProjectManagerDispatchDiagnostics($Dispatch,$Pattern,[string]$Stage
         pattern_type=(Limit-ProjectManagerText $Pattern.GetType().FullName 128)}
 }
 
+function Read-ProjectManagerExportSelection($Manager,[long]$ProcessId) {
+    # Filtering does not select a project. A successful Invoke can therefore be
+    # a no-op. Read a single exact selection before touching Export; never infer
+    # one from button enabled state, a search value or the on-disk catalogue.
+    $script:OperationDiagnostics=@{stage='export_selection'}
+    $search=Read-ProjectManagerSearchState $Manager $ProcessId
+    if([string]::IsNullOrWhiteSpace($search.Value)){
+        Fail-ProjectManager 'EXACT_NAME_FILTER_REQUIRED'
+    }
+    $bin=Find-ProjectManagerProjectBin $Manager $ProcessId
+    $selection=$null
+    if(-not $bin.TryGetCurrentPattern([System.Windows.Automation.SelectionPattern]::Pattern,[ref]$selection)){
+        Fail-ProjectManager 'PROJECT_SELECTION_UNAVAILABLE'
+    }
+    $items=@($selection.Current.GetSelection())
+    if($items.Count -eq 0){Fail-ProjectManager 'PROJECT_SELECTION_REQUIRED'}
+    if($items.Count -ne 1){Fail-ProjectManager 'PROJECT_SELECTION_AMBIGUOUS'}
+    $item=$items[0];$current=$item.Current
+    if($current.ProcessId -ne $ProcessId -or -not $current.IsEnabled -or $current.IsOffscreen -or
+        $current.ControlType -notin @([System.Windows.Automation.ControlType]::ListItem,
+            [System.Windows.Automation.ControlType]::DataItem,[System.Windows.Automation.ControlType]::TreeItem) -or
+        $current.Name -cne $search.Value){Fail-ProjectManager 'PROJECT_SELECTION_UNVERIFIED'}
+    $pattern=$null
+    if(-not $item.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern,[ref]$pattern)){
+        Fail-ProjectManager 'PROJECT_SELECTION_UNAVAILABLE'
+    }
+    $container=$pattern.Current.SelectionContainer
+    if(-not $pattern.Current.IsSelected -or $null -eq $container -or
+        $container.Current.ProcessId -ne $ProcessId){Fail-ProjectManager 'PROJECT_SELECTION_UNVERIFIED'}
+    $binId=@($bin.GetRuntimeId());$containerId=@($container.GetRuntimeId());$itemId=@($item.GetRuntimeId())
+    foreach($identity in @($binId,$containerId,$itemId)){
+        if($identity.Count -lt 1 -or $identity.Count -gt 32 -or
+            @($identity|Where-Object {$_ -isnot [int]}).Count -gt 0){
+            Fail-ProjectManager 'PROJECT_SELECTION_UNVERIFIED'
+        }
+    }
+    if(($binId -join ':') -cne ($containerId -join ':') -or
+        ($itemId -join ':') -ceq ($binId -join ':')){Fail-ProjectManager 'PROJECT_SELECTION_UNVERIFIED'}
+    return @{project_name=[string]$current.Name;runtime_id=@($itemId)}
+}
+
 function Inspect-ProjectManagerExportDialog($Request) {
     if(-not [Environment]::UserInteractive -or -not [ProjectManagerNative]::InteractiveDesktop()){
         Fail-ProjectManager 'DESKTOP_UNAVAILABLE'
@@ -925,6 +966,8 @@ function Inspect-ProjectManagerExportDialog($Request) {
 function Begin-ProjectManagerCandidateExport($Request,[bool]$IncludeTree=$true) {
     $binding=Assert-ProjectManagerContext $Request.expected_process
     Assert-ProjectManagerLocalMode $binding.Manager $Request.expected_process.pid
+    $tick=Get-ProjectManagerInputTick
+    $selected=Read-ProjectManagerExportSelection $binding.Manager $Request.expected_process.pid
     $before=@(Get-ProjectManagerWindowElements $binding.Manager $Request.expected_process.pid|
         ForEach-Object {$_.GetRuntimeId()-join ':'})
     $button=Find-ProjectManagerActionButton $binding.Manager 'Export' $Request.expected_process.pid
@@ -932,7 +975,13 @@ function Begin-ProjectManagerCandidateExport($Request,[bool]$IncludeTree=$true) 
     if(-not $button.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern,[ref]$invoke)){
         Fail-ProjectManager 'EXPORT_INVOKE_UNAVAILABLE'
     }
-    $tick=Get-ProjectManagerInputTick
+    $binding=Assert-ProjectManagerContext $Request.expected_process
+    $fresh=Read-ProjectManagerExportSelection $binding.Manager $Request.expected_process.pid
+    if($fresh.project_name -cne $selected.project_name -or
+        ($fresh.runtime_id -join ':') -cne ($selected.runtime_id -join ':')){
+        Fail-ProjectManager 'PROJECT_SELECTION_CHANGED'
+    }
+    if((Get-ProjectManagerInputTick) -ne $tick){Fail-ProjectManager 'USER_INPUT_CHANGED'}
     $script:ExportTouched=$true
     $dispatch=Start-ProjectManagerExportInvoke $invoke
     $script:ActiveExportDispatch=$dispatch

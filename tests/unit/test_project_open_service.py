@@ -478,6 +478,42 @@ def test_export_reconciliation_requires_explicit_consent_and_keeps_failure(
     assert fixture.accepted_opens == 1 and fixture.export_inspections == 1
 
 
+@pytest.mark.parametrize("cause", [
+    "PROJECT_SELECTION_UNAVAILABLE", "PROJECT_SELECTION_REQUIRED",
+    "PROJECT_SELECTION_UNVERIFIED", "PROJECT_SELECTION_CHANGED",
+])
+def test_selection_refusal_retains_original_export_history_and_never_replays(
+    fixture: Fixture, cause: str
+) -> None:
+    original = rejected_export(fixture)
+    error = UIError(False)
+    error.code = cause
+    error.diagnostics = {
+        "preflight_operation": "export_candidate", "stage": "export_selection"
+    }
+    fixture.ui_error = error
+    with pytest.raises(ProjectOpenError, match=cause) as failure:
+        fixture.open(
+            confirm_retry_preflight=True, confirm_reconcile_export_preflight=True
+        )
+    assert failure.value.preflight_failure == {
+        "operation": "export_candidate", "stage": "export_selection",
+        "project_open_requested": False, "candidate_export_uncertain": False,
+        "view_changes_uncertain": False,
+    }
+    before = fixture.receipt_path().read_bytes()
+    saved = json.loads(before)
+    assert saved["schema"] == 4
+    assert saved["key_hash"] == json.loads(original)["key_hash"]
+    assert saved["previous_attempts"][0]["receipt_json"].encode() == original
+    with pytest.raises(ProjectOpenError, match="ORIGINAL_OPEN_REJECTED") as replay:
+        fixture.open()
+    assert replay.value.cause_code == cause
+    assert fixture.receipt_path().read_bytes() == before
+    assert len(fixture.opens) == 2 and fixture.accepted_opens == 0
+    assert fixture.native_calls == [] and fixture.startups == []
+
+
 @pytest.mark.parametrize(
     "override",
     [
