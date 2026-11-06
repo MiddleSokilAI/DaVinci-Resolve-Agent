@@ -19,6 +19,7 @@ FINISH_ACTIONS = frozenset(
     {"set_clip_properties", "add_subtitles", "prepare_render", "start_render"}
 )
 EXPORT_DIRECTORY_CAPABILITY = "render_output_directory_v1"
+EMPTY_TIMELINE_FORMAT_CAPABILITY = "empty_timeline_format_v1"
 PROPERTY_LIMITS = {
     "ZoomX": (0.1, 4),
     "ZoomY": (0.1, 4),
@@ -122,14 +123,27 @@ def validate_finishing(
             expected_media_path=Path(checked_paths[0]).as_posix(),
             replacement_take_path=Path(checked_paths[1]).as_posix(),
         )
-    if action == "set_clip_properties" and set(a) == {
+    format_fields = {
         "timeline_name",
         "empty_timeline_fps",
-    }:
+        "empty_timeline_resolution",
+    }
+    if (
+        action == "set_clip_properties"
+        and {"timeline_name", "empty_timeline_fps"} <= set(a) <= format_fields
+    ):
         fps = a["empty_timeline_fps"]
         if type(fps) is not int or fps not in {24, 25, 30, 50, 60}:
             raise ValueError("Unsupported timeline frame rate.")
-        return {"timeline_name": name, "empty_timeline_fps": fps}
+        result = {"timeline_name": name, "empty_timeline_fps": fps}
+        if "empty_timeline_resolution" in a:
+            resolution = a["empty_timeline_resolution"]
+            if not isinstance(resolution, str) or resolution not in {
+                "1920x1080", "3840x2160"
+            }:
+                raise ValueError("Unsupported empty timeline resolution.")
+            result["empty_timeline_resolution"] = resolution
+        return result
     if action == "get_timeline_summary" and a.get("inspect_circle") is True:
         base = dict(a)
         del base["inspect_circle"]

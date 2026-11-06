@@ -476,7 +476,7 @@ class Supervisor:
         atomic_json(self.profile.state_directory / "active.json", active)
 
     def _audit_rotation(self) -> list[Path]:
-        """Refuse migration around any earlier uncertain operation evidence."""
+        """Retire validated expired reads; preserve all uncertain write fences."""
         for path in (self.profile.state_directory / "sdk-write-owners").glob("*.json"):
             if path.is_symlink() or path.stat().st_size > 4 * 1024 * 1024:
                 raise SupervisorError("INVALID_SDK_WRITE_RECORD")
@@ -487,10 +487,22 @@ class Supervisor:
                 raise SupervisorError("PREVIOUS_SDK_WRITE_REQUIRES_RECOVERY")
         roots = runtime_history(self.profile)
         for root in roots:
+            metadata = _json(root / "session.json")
+            _validate_runtime_policy(self.profile, metadata)
             sdk_inbox = root / "sdk-rpc/inbox"
             if sdk_inbox.exists() or sdk_inbox.is_symlink():
-                raise SupervisorError("PREVIOUS_SDK_REQUEST_REQUIRES_RECOVERY")
-            _validate_runtime_policy(self.profile, _json(root / "session.json"))
+                from providers.resolve.preset_channel import PresetSDKChannel
+
+                try:
+                    PresetSDKChannel.recover_expired_read(root, metadata["session"])
+                except (
+                    OSError, ValueError, RuntimeError, KeyError, TypeError
+                ) as error:
+                    raise SupervisorError(
+                        "PREVIOUS_SDK_REQUEST_REQUIRES_RECOVERY"
+                    ) from error
+                if sdk_inbox.exists() or sdk_inbox.is_symlink():
+                    raise SupervisorError("PREVIOUS_SDK_REQUEST_REQUIRES_RECOVERY")
             evidence = inspect_startup(root)
             recovery = evidence["recovery"]
             if (

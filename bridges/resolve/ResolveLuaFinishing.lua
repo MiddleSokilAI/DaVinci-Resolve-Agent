@@ -214,13 +214,31 @@ return function(api, root, helpers, shared)
         if action=="set_clip_properties" and a.empty_timeline_fps then
             local fps=a.empty_timeline_fps
             check(fps==24 or fps==25 or fps==30 or fps==50 or fps==60,"INVALID_ARGUMENTS")
+            local resolutions={['1920x1080']={1920,1080},['3840x2160']={3840,2160}}
+            local dimensions=nil
+            if a.empty_timeline_resolution~=nil then
+                check(type(a.empty_timeline_resolution)=='string',"INVALID_ARGUMENTS")
+                dimensions=resolutions[a.empty_timeline_resolution]
+                check(dimensions~=nil,"INVALID_ARGUMENTS")
+            end
             local c=counts(timeline)
             check(c.video==0 and c.audio==0 and c.subtitle==0,"TIMELINE_NOT_EMPTY")
             return function()
                 check(api:OpenPage("edit")==true,"VERIFY_FAILED")
                 check(project:SetCurrentTimeline(timeline)==true,"VERIFY_FAILED")
-                check(timeline:SetSettings({useCustomSettings="1",timelineFrameRate=tostring(fps)})==true,"TIMELINE_SETTINGS_FAILED")
+                local fresh=counts(timeline)
+                check(fresh.video==0 and fresh.audio==0 and fresh.subtitle==0,"TIMELINE_NOT_EMPTY")
+                local settings={useCustomSettings="1",timelineFrameRate=tostring(fps)}
+                if dimensions then
+                    settings.timelineResolutionWidth=tostring(dimensions[1])
+                    settings.timelineResolutionHeight=tostring(dimensions[2])
+                end
+                check(timeline:SetSettings(settings)==true,"TIMELINE_SETTINGS_FAILED")
                 check(tonumber(timeline:GetSetting("timelineFrameRate"))==fps,"VERIFY_FAILED")
+                if dimensions then
+                    check(tonumber(timeline:GetSetting("timelineResolutionWidth"))==dimensions[1]
+                        and tonumber(timeline:GetSetting("timelineResolutionHeight"))==dimensions[2],"VERIFY_FAILED")
+                end
             end
         end
         if action == "set_clip_properties" and a.preview_start == true then

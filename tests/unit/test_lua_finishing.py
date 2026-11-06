@@ -89,6 +89,38 @@ def test_empty_timeline_fps_accepts_supported_rate(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.parametrize("resolution", ["1920x1080", "3840x2160"])
+def test_empty_timeline_resolution_is_preserved(resolution: str) -> None:
+    args = {"timeline_name": "Review", "empty_timeline_fps": 60,
+            "empty_timeline_resolution": resolution}
+    assert validate_finishing("set_clip_properties", args, []) == args
+
+
+@pytest.mark.parametrize("resolution", [None, True, 3840, "4096x2160", "3840x1080", ""])
+def test_empty_timeline_rejects_unsupported_resolution(resolution: Any) -> None:
+    with pytest.raises(ValueError, match="resolution"):
+        validate_finishing("set_clip_properties", {
+            "timeline_name": "Review", "empty_timeline_fps": 60,
+            "empty_timeline_resolution": resolution,
+        }, [])
+
+
+def test_old_native_session_cannot_claim_a_resolution_change(tmp_path: Path) -> None:
+    root = tmp_path / "native"
+    prepare(root)
+    metadata = json.loads((root / "session.json").read_text())
+    metadata["capabilities"].remove("empty_timeline_format_v1")
+    (root / "session.json").write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match="empty_timeline_format_v1"):
+        LuaSnapshotClient(root).request("set_clip_properties", arguments={
+            "timeline_name": "Review", "empty_timeline_fps": 60,
+            "empty_timeline_resolution": "3840x2160",
+        }, expected_project_id="project", confirm=True, idempotency_key="format")
+    assert not (root / "receipts").exists()
+    assert not (root / "inbox").exists()
+    assert (root / "request.lua").read_text() == "return nil\n"
+
+
 @pytest.mark.parametrize(
     "change",
     [

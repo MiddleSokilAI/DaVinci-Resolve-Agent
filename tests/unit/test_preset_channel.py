@@ -74,3 +74,33 @@ def test_mismatched_trace_cannot_authorize_packet_cleanup(tmp_path: Path) -> Non
     with pytest.raises(BridgeProtocolError, match="differs"):
         channel._recover_expired_read()
     assert (channel.packets / "inbox").is_dir()
+
+
+@pytest.mark.parametrize("action,expired,retired", [
+    ("get_capabilities", True, True), ("get_capabilities", False, False),
+    ("create_timeline", True, False), ("unknown", True, False),
+])
+def test_rotation_entrypoint_preserves_write_and_live_read_scopes(
+    tmp_path: Path, action: str, expired: bool, retired: bool,
+) -> None:
+    channel, trace, before = pending(tmp_path, action, expired=expired)
+    assert PresetSDKChannel.recover_expired_read(tmp_path, channel.session) is retired
+    assert (channel.packets / "inbox").exists() is (not retired)
+    assert json.loads(trace.read_text()) == (
+        {**before, "phase": "expired_read"} if retired else before
+    )
+
+
+def test_rotation_entrypoint_keeps_corrupt_packets_and_invalid_templates(
+    tmp_path: Path,
+) -> None:
+    channel, trace, before = pending(tmp_path, "get_capabilities")
+    record = {**before, "packet": {**before["packet"], "action": "stop"}}
+    atomic_json(trace, record)
+    with pytest.raises(BridgeProtocolError):
+        PresetSDKChannel.recover_expired_read(tmp_path, channel.session)
+    assert (channel.packets / "inbox").is_dir()
+    (tmp_path / "sdk-template.preset").write_text("invalid")
+    with pytest.raises(BridgeProtocolError):
+        PresetSDKChannel.recover_expired_read(tmp_path, channel.session)
+    assert (channel.packets / "inbox").is_dir()

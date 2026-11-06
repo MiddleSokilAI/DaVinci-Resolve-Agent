@@ -460,3 +460,63 @@ def test_host_open_cancellation_drains_worker(tmp_path: Path) -> None:
             await request
 
     asyncio.run(scenario())
+
+
+def test_old_bundle_resolution_refuses_before_write_ownership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = profile_at(tmp_path)
+    first, second = active_at(profile, "first"), active_at(profile, "second")
+    install_state(monkeypatch, profile, first, second)
+    root = Path(first["runtime"])
+    metadata = json.loads((root / "session.json").read_text())
+    metadata["capabilities"].remove("empty_timeline_format_v1")
+    (root / "session.json").write_text(json.dumps(metadata))
+    result = asyncio.run(call_result(ManagedMarkerServer(profile),
+        "resolve_lua_set_empty_timeline_fps", {
+            "timeline_name": "Review", "frame_rate": 60,
+            "resolution": "3840x2160", "expected_project_id": "project",
+            "confirm": True, "idempotency_key": "format-key",
+        }))
+    assert result.is_error and result.structured_content is not None
+    assert result.structured_content["code"] == "NATIVE_SESSION_UPGRADE_REQUIRED"
+    assert not (profile.state_directory / "write-owners").exists()
+    assert not (root / "inbox").exists()
+    assert list((root / "receipts").glob("*.json")) == []
+
+
+def test_mcp_empty_format_preserves_resolution_and_tool_catalogue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = profile_at(tmp_path)
+    first, second = active_at(profile, "first"), active_at(profile, "second")
+    install_state(monkeypatch, profile, first, second)
+    calls: list[dict[str, Any]] = []
+
+    def request(
+        self: Any, action: str, timeout: float, **kwargs: Any,
+    ) -> dict[str, Any]:
+        calls.append({"action": action, **kwargs})
+        return {"status": "completed"}
+
+    monkeypatch.setattr(LuaSnapshotClient, "request", request)
+    server = ManagedMarkerServer(profile)
+
+    async def scenario() -> None:
+        tools = await server.list_tools()
+        assert len(tools) == 54
+        tool = next(t for t in tools if t.name == "resolve_lua_set_empty_timeline_fps")
+        assert '"3840x2160"' in json.dumps(tool.input_schema)
+        result = await call_result(server, tool.name, {
+            "timeline_name": "Review", "frame_rate": 60,
+            "resolution": "3840x2160", "expected_project_id": "project",
+            "confirm": True, "idempotency_key": "format-key",
+        })
+        assert not result.is_error
+
+    asyncio.run(scenario())
+    assert len(calls) == 1 and calls[0]["action"] == "set_clip_properties"
+    assert calls[0]["arguments"] == {
+        "timeline_name": "Review", "empty_timeline_fps": 60,
+        "empty_timeline_resolution": "3840x2160",
+    }

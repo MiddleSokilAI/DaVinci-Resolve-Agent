@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
@@ -622,16 +622,23 @@ def create_server(
         idempotency_key: str,
         confirm: bool = False,
         timeout_seconds: float = 60,
+        resolution: Literal["1920x1080", "3840x2160"] | None = None,
     ) -> dict[str, Any]:
-        """Recover settings of an existing EMPTY timeline; refuse any clips."""
+        """Set EMPTY timeline FPS and optional 1920x1080/3840x2160 resolution.
+
+        Refuses any video, audio or subtitle clips. Readback must match all
+        requested settings; the whole format change retains one stable key.
+        """
+        arguments: dict[str, Any] = {
+            "timeline_name": timeline_name, "empty_timeline_fps": frame_rate,
+        }
+        if resolution is not None:
+            arguments["empty_timeline_resolution"] = resolution
         return await asyncio.to_thread(
             client.request,
             "set_clip_properties",
             timeout_seconds,
-            arguments={
-                "timeline_name": timeline_name,
-                "empty_timeline_fps": frame_rate,
-            },
+            arguments=arguments,
             expected_project_id=expected_project_id,
             idempotency_key=idempotency_key,
             confirm=confirm,
