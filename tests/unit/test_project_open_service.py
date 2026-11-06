@@ -14,6 +14,7 @@ from providers.resolve.lua_transport import LuaCommandTimeoutError
 from providers.resolve.marker_supervisor import (
     OperationBusy,
     Profile,
+    _lock,
     operation_lock,
     project_open_lock,
 )
@@ -79,6 +80,22 @@ class Fixture:
         self.generation = "a" * 32
         self.lock_after_open = False
         self.held_lock: Any = None
+        self.startups: list[str] = []
+        self.startup_error: Exception | None = None
+        self.restore_target = False
+
+    def startup(self, deadline: float, name: str) -> dict[str, Any]:
+        self.startups.append(name)
+        if self.startup_error is not None:
+            raise self.startup_error
+        self.process = {
+            **self.process,
+            "creation_time": str(int(self.process["creation_time"]) + 1),
+        }
+        self.ui_state = "project_window" if self.restore_target else "project_manager"
+        self.process["project_name_hint"] = name if self.restore_target else None
+        self.generation = "c" * 32
+        return {"state": self.ui_state, "process": dict(self.process)}
 
     def inspect(self) -> dict[str, Any]:
         self.inspections += 1
@@ -179,6 +196,7 @@ class Fixture:
             client_factory=self.client,
             clock=lambda: self.now,
             sleep=self.sleep,
+            startup=self.startup,
         )
 
     def open(self, **kwargs: Any) -> dict[str, Any]:
@@ -238,7 +256,8 @@ def test_opens_once_then_verifies_exact_native_context(fixture: Fixture) -> None
     "error", [UIError(False), OSError("unavailable"), ValueError("invalid")]
 )
 def test_inspection_failure_never_creates_open_intent(
-    fixture: Fixture, error: Exception,
+    fixture: Fixture,
+    error: Exception,
 ) -> None:
     def inspect() -> dict[str, Any]:
         raise error
@@ -258,8 +277,11 @@ def test_inspection_failure_never_creates_open_intent(
 def test_expired_preflight_does_not_dispatch_ui(fixture: Fixture) -> None:
     def inspect() -> dict[str, Any]:
         fixture.now += 2
-        return {"state": "project_manager", "eligible": True,
-                "process": dict(fixture.process)}
+        return {
+            "state": "project_manager",
+            "eligible": True,
+            "process": dict(fixture.process),
+        }
 
     fixture.inspect = inspect  # type: ignore[method-assign]
     with pytest.raises(ProjectOpenError, match="OPEN_DEADLINE_BEFORE_DISPATCH"):
@@ -270,9 +292,13 @@ def test_expired_preflight_does_not_dispatch_ui(fixture: Fixture) -> None:
 
 def test_non_disk_ui_target_refuses_before_dispatch(fixture: Fixture) -> None:
     with pytest.raises(ProjectOpenError, match="UI_LIBRARY_TYPE_UNSUPPORTED"):
-        fixture.open(expected_database={
-            "DbType": "PostgreSQL", "DbName": "Remote Library", "IpAddress": "localhost"
-        })
+        fixture.open(
+            expected_database={
+                "DbType": "PostgreSQL",
+                "DbName": "Remote Library",
+                "IpAddress": "localhost",
+            }
+        )
     assert fixture.opens == []
     assert not fixture.receipt_path().exists()
 
@@ -421,7 +447,8 @@ def test_pending_original_process_gone_requires_recovery(fixture: Fixture) -> No
 
 @pytest.mark.parametrize("replacement", [False, True])
 def test_interrupted_open_keeps_original_key_after_hidden_process_exit(
-    fixture: Fixture, replacement: bool,
+    fixture: Fixture,
+    replacement: bool,
 ) -> None:
     fixture.bootstrap = False
     key = "api-laws-uk-open-20261106"
@@ -441,6 +468,213 @@ def test_interrupted_open_keeps_original_key_after_hidden_process_exit(
     assert path.read_bytes() == before
     assert list(path.parent.glob("*.json")) == [path]
     assert len(fixture.opens) == 1 and not fixture.native_calls
+
+
+def interrupted_open(fixture: Fixture) -> bytes:
+    fixture.bootstrap = False
+    with pytest.raises(ProjectOpenError, match="OPEN_OUTCOME_UNVERIFIED"):
+        fixture.open()
+    before = fixture.receipt_path().read_bytes()
+    fixture.ui_state = "resolve_not_running"
+    return before
+
+
+@pytest.mark.parametrize("restored", [False, True])
+def test_explicit_exit_recovery_keeps_history_and_replays_without_duplicate(
+    fixture: Fixture,
+    restored: bool,
+) -> None:
+    original_bytes = interrupted_open(fixture)
+    original = json.loads(original_bytes)
+    fixture.restore_target = restored
+    fixture.bootstrap = True
+    result = fixture.open(confirm_recover_exited_process=True)
+    assert result["context_verified"] is True
+    assert result["recovered_after_process_exit"] is True
+    assert result["no_op"] is restored
+    assert result["ui_open_dispatched"] is (not restored)
+    assert fixture.startups == [PROJECT["name"]]
+    assert len(fixture.opens) == (1 if restored else 2)
+    saved = json.loads(fixture.receipt_path().read_text())
+    assert saved["schema"] == 2 and saved["key_hash"] == original["key_hash"]
+    assert saved["arguments"] == original["arguments"]
+    (previous,) = saved["previous_attempts"]
+    assert json.loads(previous["receipt_json"]) == original
+    assert previous["receipt_json"].encode() == original_bytes
+    assert (
+        hashlib.sha256(previous["receipt_json"].encode()).hexdigest()
+        == previous["sha256"]
+    )
+    replay = fixture.open(confirm_recover_exited_process=True)
+    assert replay["replayed"] is True and replay["ui_open_dispatched"] is False
+    assert replay["native_connection_verified"] is False
+    assert len(fixture.opens) == (1 if restored else 2)
+    assert list(fixture.receipt_path().parent.glob("*.json")) == [
+        fixture.receipt_path()
+    ]
+
+
+def test_recovery_flag_does_not_repeat_open_while_original_process_lives(
+    fixture: Fixture,
+) -> None:
+    interrupted_open(fixture)
+    fixture.ui_state = "project_manager"
+    fixture.bootstrap = True
+    result = fixture.open(confirm_recover_exited_process=True)
+    assert result["context_verified"] is True
+    assert "recovered_after_process_exit" not in result
+    assert fixture.startups == [] and len(fixture.opens) == 1
+
+
+def test_exit_recovery_preserves_original_receipt_bom_and_whitespace(
+    fixture: Fixture,
+) -> None:
+    interrupted_open(fixture)
+    path = fixture.receipt_path()
+    original = b"\xef\xbb\xbf\n" + path.read_bytes() + b"\n"
+    path.write_bytes(original)
+    fixture.bootstrap = True
+    fixture.open(confirm_recover_exited_process=True)
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    previous = saved["previous_attempts"][0]
+    assert previous["receipt_json"].encode() == original
+    assert previous["sha256"] == hashlib.sha256(original).hexdigest()
+
+
+def test_exit_recovery_never_waits_for_connection_lock_while_holding_operation(
+    fixture: Fixture,
+) -> None:
+    before = interrupted_open(fixture)
+    with (
+        _lock(fixture.profile, "connection.lock"),
+        pytest.raises(ProjectOpenError, match="PROJECT_STARTUP_BUSY"),
+    ):
+        fixture.open(confirm_recover_exited_process=True)
+    assert fixture.receipt_path().read_bytes() == before
+    assert not fixture.startups and len(fixture.opens) == 1
+
+
+def test_recovery_failure_before_open_keeps_original_receipt(fixture: Fixture) -> None:
+    before = interrupted_open(fixture)
+    fixture.startup_error = RuntimeError("STARTUP_REFUSED")
+    with pytest.raises(RuntimeError, match="STARTUP_REFUSED"):
+        fixture.open(confirm_recover_exited_process=True)
+    assert fixture.receipt_path().read_bytes() == before
+    assert len(fixture.opens) == 1 and not fixture.native_calls
+
+
+def test_recovery_history_limit_refuses_before_startup(fixture: Fixture) -> None:
+    interrupted_open(fixture)
+    with pytest.raises(ProjectOpenError):
+        fixture.open(confirm_recover_exited_process=True)
+    path = fixture.receipt_path()
+    receipt = json.loads(path.read_text())
+    prior = json.loads(receipt["previous_attempts"][0]["receipt_json"])
+    receipt["previous_attempts"] = []
+    for number in range(8):
+        prior["process"]["creation_time"] = str(638999000000000000 + number)
+        data = json.dumps(prior)
+        receipt["previous_attempts"].append(
+            {
+                "receipt_json": data,
+                "sha256": hashlib.sha256(data.encode()).hexdigest(),
+            }
+        )
+    receipt["process"]["creation_time"] = "638999000000000009"
+    fixture.process["creation_time"] = receipt["process"]["creation_time"]
+    fixture.ui_state = "resolve_not_running"
+    atomic_json(path, receipt)
+    before = path.read_bytes()
+    with pytest.raises(ProjectOpenError, match="RECOVERY_HISTORY_LIMIT"):
+        fixture.open(confirm_recover_exited_process=True)
+    assert path.read_bytes() == before
+    assert len(fixture.startups) == 1 and len(fixture.opens) == 2
+
+
+def test_second_uncertain_open_is_not_repeated_by_the_recovery_flag(
+    fixture: Fixture,
+) -> None:
+    interrupted_open(fixture)
+    with pytest.raises(ProjectOpenError, match="OPEN_OUTCOME_UNVERIFIED"):
+        fixture.open(confirm_recover_exited_process=True)
+    before = fixture.receipt_path().read_bytes()
+    with pytest.raises(ProjectOpenError, match="OPEN_OUTCOME_UNVERIFIED"):
+        fixture.open(confirm_recover_exited_process=True)
+    assert fixture.receipt_path().read_bytes() == before
+    assert len(fixture.opens) == 2 and len(fixture.startups) == 1
+
+
+def test_a_later_confirmed_exit_appends_history_without_nesting(
+    fixture: Fixture,
+) -> None:
+    original = interrupted_open(fixture)
+    with pytest.raises(ProjectOpenError, match="OPEN_OUTCOME_UNVERIFIED"):
+        fixture.open(confirm_recover_exited_process=True)
+    fixture.ui_state = "resolve_not_running"
+    fixture.bootstrap = True
+    result = fixture.open(confirm_recover_exited_process=True)
+    assert result["previous_attempt_count"] == 2
+    saved = json.loads(fixture.receipt_path().read_text())
+    previous = saved["previous_attempts"]
+    assert previous[0]["receipt_json"].encode() == original
+    assert "previous_attempts" not in json.loads(previous[1]["receipt_json"])
+    assert len(fixture.opens) == 3 and len(fixture.startups) == 2
+
+
+def test_recovery_requires_original_receipt_and_a_strict_boolean(
+    fixture: Fixture,
+) -> None:
+    with pytest.raises(ProjectOpenError, match="RECOVERY_REQUIRES_ORIGINAL_RECEIPT"):
+        fixture.open(confirm_recover_exited_process=True)
+    with pytest.raises(ValueError, match="must be a boolean"):
+        fixture.open(confirm_recover_exited_process=1)
+    assert not fixture.opens and not fixture.startups and not fixture.inspections
+
+
+@pytest.mark.parametrize("fault", ["digest", "target"])
+def test_corrupt_recovery_history_blocks_replay(fixture: Fixture, fault: str) -> None:
+    interrupted_open(fixture)
+    fixture.bootstrap = True
+    fixture.open(confirm_recover_exited_process=True)
+    path = fixture.receipt_path()
+    receipt = json.loads(path.read_text())
+    entry = receipt["previous_attempts"][0]
+    if fault == "digest":
+        entry["sha256"] = "0" * 64
+    else:
+        prior = json.loads(entry["receipt_json"])
+        prior["arguments"]["project_name"] = "Another project"
+        entry["receipt_json"] = json.dumps(prior)
+        entry["sha256"] = hashlib.sha256(entry["receipt_json"].encode()).hexdigest()
+    atomic_json(path, receipt)
+    with pytest.raises(ProjectOpenError, match="HOST_RECEIPT_INVALID"):
+        fixture.open(confirm_recover_exited_process=True)
+    assert len(fixture.opens) == 2 and len(fixture.startups) == 1
+
+
+def test_recovery_still_requires_fresh_matching_native_uuid(fixture: Fixture) -> None:
+    interrupted_open(fixture)
+    fixture.bootstrap = True
+    fixture.native_override = {"project": {**PROJECT, "id": "wrong-project"}}
+    with pytest.raises(ProjectOpenError, match="NATIVE_CONTEXT_UNVERIFIED"):
+        fixture.open(confirm_recover_exited_process=True)
+    assert pending_project_open(fixture.profile)["pending"] is True
+    assert len(fixture.opens) == 2
+
+
+def test_recovery_flag_cannot_bypass_another_key_or_native_owner(
+    fixture: Fixture,
+) -> None:
+    before = interrupted_open(fixture)
+    with pytest.raises(ProjectOpenError, match="ANOTHER_PROJECT_OPEN_PENDING"):
+        fixture.open(confirm_recover_exited_process=True, idempotency_key="another-key")
+    owner = fixture.state / "write-owners" / fixture.receipt_path().name
+    owner.parent.mkdir()
+    owner.write_text("{}")
+    with pytest.raises(ProjectOpenError, match="IDEMPOTENCY_KEY_OWNED_BY_NATIVE_WRITE"):
+        fixture.open(confirm_recover_exited_process=True)
+    assert fixture.receipt_path().read_bytes() == before
+    assert not fixture.startups and len(fixture.opens) == 1
 
 
 def test_pending_original_generation_cannot_migrate(fixture: Fixture) -> None:
@@ -652,7 +886,8 @@ def test_operation_body_is_never_retried(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("historical", [False, True])
 def test_only_fresh_verified_open_releases_closed_project_hold(
-    fixture: Fixture, historical: bool,
+    fixture: Fixture,
+    historical: bool,
 ) -> None:
     from uuid import uuid4
 

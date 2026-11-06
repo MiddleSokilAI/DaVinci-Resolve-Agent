@@ -10,7 +10,6 @@ import hashlib
 import json
 import math
 import re
-import subprocess
 import time
 import unicodedata
 from pathlib import Path
@@ -62,7 +61,10 @@ def _valid_project(value: Any) -> bool:
 
 class ProjectCreateError(RuntimeError):
     def __init__(
-        self, code: str, *, uncertain: bool = False,
+        self,
+        code: str,
+        *,
+        uncertain: bool = False,
         cause_code: str | None = None,
         bridge_dispatch_uncertain: bool | None = None,
         startup_update_dispatch_uncertain: bool | None = None,
@@ -251,113 +253,41 @@ class ProjectCreateService:
 
     @staticmethod
     def _startup_update_observed(observation: dict[str, Any]) -> bool:
-        """Route only the observed fixed update prompt; the driver revalidates it."""
-        process = observation.get("process") or {}
-        candidates = observation.get("window_candidates")
-        if (
-            observation.get("state") != "modal_blocked"
-            or process.get("window_title") != "Project Manager"
-            or process.get("project_name_hint") is not None
-            or process.get("window_state") == "minimized"
-            or not isinstance(candidates, list) or not 1 <= len(candidates) <= 64
-        ):
-            return False
-        return any(
-            isinstance(item, dict)
-            and item.get("pid") == process.get("pid")
-            and item.get("name") == "Software Update"
-            and item.get("class_name") == "UiAutoUpdateDialogImp"
-            and item.get("automation_id") == "UiAutoUpdateDialog"
-            and item.get("control_type") == "ControlType.Window"
-            and item.get("is_offscreen") is False
-            for item in candidates
-        )
+        from providers.resolve.project_manager_startup import startup_update_observed
+
+        return startup_update_observed(observation)
 
     def _manager(self, deadline: float) -> dict[str, Any]:
-        """Launch at most once and await Project Manager without opening history.
-
-        This runs under the operation lock after pending-write guards. Startup
-        alone never owns the creation key; a later call can use that same key
-        after a startup timeout. Creation intent is persisted before New Project.
-        """
+        """Use the shared startup preflight; it never opens or creates a project."""
         self.startup_update_skipped = False
-        launched: subprocess.Popen[bytes] | None = None
-        launched_pid: int | None = None
-        observed_process: tuple[int, str, str] | None = None
-        update_manager_handle: int | None = None
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise ProjectCreateError("PROJECT_MANAGER_STARTUP_TIMEOUT")
-            observation = self.host.inspect()
-            state, process = observation.get("state"), observation.get("process")
-            if process is not None:
-                token = _token(process)
-                if (
-                    launched_pid is not None and token[0] != launched_pid
-                    or observed_process is not None and token != observed_process
-                ):
-                    raise ProjectCreateError("STARTUP_PROCESS_CHANGED")
-                observed_process = token
-                if update_manager_handle is not None and (
-                    process["window_handle"] != update_manager_handle
-                ):
-                    raise ProjectCreateError("STARTUP_WINDOW_CHANGED")
-            if state == "project_manager" and process is not None:
-                return dict(process)
-            if process is not None and self._startup_update_observed(observation):
-                if update_manager_handle is None:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise ProjectCreateError("PROJECT_MANAGER_STARTUP_TIMEOUT")
-                    update_manager_handle = process["window_handle"]
-                    try:
-                        skipped = self.ui.request(
-                            "skip_startup_update", process,
-                            timeout_seconds=min(20, remaining),
-                        )
-                        self.startup_update_skipped = skipped["skipped"] is True
-                    except (
-                        OSError, ValueError, RuntimeError, subprocess.TimeoutExpired
-                    ) as error:
-                        # Only Skip may have run. There is no creation intent
-                        # or Create dispatch, even if the Skip ack was lost.
-                        raise ProjectCreateError(
-                            "PROJECT_STARTUP_UPDATE_BLOCKED",
-                            cause_code=getattr(
-                                error, "detail", "UPDATE_RESPONSE_UNVERIFIED"),
-                            startup_update_dispatch_uncertain=getattr(
-                                error, "uncertain", True),
-                        ) from error
-                time.sleep(min(0.2, max(0, deadline - time.monotonic())))
-                continue
-            if state == "resolve_not_running":
-                if observed_process is not None or (
-                    launched is not None and launched.poll() is not None
-                ):
-                    # Do not relaunch a failed/replaced process in this call.
-                    raise ProjectCreateError("RESOLVE_STARTUP_EXITED")
-                if launched is None:
-                    executable = Path(_official_executable())
-                    if not executable.is_file():
-                        raise ProjectCreateError("RESOLVE_NOT_INSTALLED")
-                    try:
-                        launched = subprocess.Popen(
-                            [str(executable)],
-                            stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                            shell=False,
-                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                        )
-                    except OSError as error:
-                        raise ProjectCreateError("RESOLVE_STARTUP_FAILED") from error
-                    launched_pid = launched.pid
-            elif state != "window_unavailable":
-                # An existing project, a modal or ambiguous desktop is never
-                # switched away, focused or treated as an empty Project Manager.
-                raise ProjectCreateError("PROJECT_MANAGER_REQUIRED")
-            time.sleep(min(0.2, remaining))
+        from providers.resolve.project_manager_startup import (
+            ProjectStartupError,
+            await_project_window,
+        )
+
+        def skip_update(process: dict[str, Any], timeout: float) -> dict[str, Any]:
+            return self.ui.request(
+                "skip_startup_update", process, timeout_seconds=timeout
+            )
+
+        try:
+            result = await_project_window(
+                deadline=deadline,
+                inspect=self.host.inspect,
+                skip_update=skip_update,
+                official_executable=_official_executable,
+                process_token=_token,
+                clock=time.monotonic,
+                sleep=time.sleep,
+            )
+        except ProjectStartupError as error:
+            raise ProjectCreateError(
+                error.code,
+                cause_code=error.cause_code,
+                startup_update_dispatch_uncertain=error.startup_update_dispatch_uncertain,
+            ) from error
+        self.startup_update_skipped = result["startup_update_skipped"]
+        return dict(result["process"])
 
     def create(
         self,
@@ -469,9 +399,7 @@ class ProjectCreateService:
                 )
                 atomic_json(path, receipt)
                 begin_attempted = True
-                self.ui.request(
-                    "begin", process, timeout_seconds=remaining
-                )
+                self.ui.request("begin", process, timeout_seconds=remaining)
             try:
                 return self._recover(
                     path, receipt, deadline, begin_attempted=begin_attempted
@@ -484,7 +412,10 @@ class ProjectCreateService:
                 ) from error
 
     def _restart_before_dialog(
-        self, path: Path, receipt: dict[str, Any], deadline: float,
+        self,
+        path: Path,
+        receipt: dict[str, Any],
+        deadline: float,
     ) -> None:
         """Rebind a stopped application only before any Create was dispatched.
 
@@ -636,7 +567,8 @@ class ProjectCreateService:
             receipt["phase"] = "bootstrapping"
             atomic_json(path, receipt)
             active = supervisor._new(
-                current, Path(active["runtime"]) if active else None,
+                current,
+                Path(active["runtime"]) if active else None,
                 creation_context={
                     "name": receipt["name"],
                     "database": receipt["before"]["database"],
@@ -674,7 +606,8 @@ class ProjectCreateService:
                     native_start_observed = any(
                         evidence.exists() or evidence.is_symlink()
                         for evidence in (
-                            root / "marker-session-consumed.drp", root / "stopped.json"
+                            root / "marker-session-consumed.drp",
+                            root / "stopped.json",
                         )
                     )
                     if error.uncertain is False and not native_start_observed:
@@ -682,14 +615,16 @@ class ProjectCreateService:
                         # Keep the original Create receipt/generation; only its
                         # bridge startup may resume on the next same-key call.
                         active.update(
-                            phase="prepared", dispatch_started=False,
+                            phase="prepared",
+                            dispatch_started=False,
                             dispatch_started_at=None,
                         )
                     supervisor._save(active)
                     # Create was already sent. A definite bridge refusal must
                     # not imply a definite failure of the project creation.
                     raise ProjectCreateError(
-                        "PROJECT_BRIDGE_BOOTSTRAP_FAILED", uncertain=True,
+                        "PROJECT_BRIDGE_BOOTSTRAP_FAILED",
+                        uncertain=True,
                         cause_code=error.code,
                         bridge_dispatch_uncertain=error.uncertain,
                     ) from error
