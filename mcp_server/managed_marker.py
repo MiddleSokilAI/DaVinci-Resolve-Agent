@@ -275,6 +275,9 @@ class ManagedMarkerServer(MCPServer[Any]):
                 " Explicit confirm_recover_exited_process permits a new attempt "
                 "only after the original process has exited; "
                 "history and key stay owned."
+                " No forced focus or key messages in this Open workflow."
+                " confirm_retry_preflight resumes a WINDOW_UNAVAILABLE rejection"
+                " only in its same verified Manager process, preserving history."
             ),
             input_schema={
                 "type": "object", "additionalProperties": False,
@@ -301,6 +304,14 @@ class ManagedMarkerServer(MCPServer[Any]):
                         "description": (
                             "Explicit consent to recover this same key after "
                             "verified process exit, preserving prior attempts."
+                        ),
+                    },
+                    "confirm_retry_preflight": {
+                        "type": "boolean", "default": False,
+                        "description": (
+                            "Retry only a rejected WINDOW_UNAVAILABLE preflight "
+                            "on this same key and live Manager process. Never "
+                            "resubmit an uncertain or completed native Open."
                         ),
                     },
                     "timeout_seconds": {"type": "number", "minimum": 1,

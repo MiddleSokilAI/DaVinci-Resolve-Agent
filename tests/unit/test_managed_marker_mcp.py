@@ -295,10 +295,12 @@ def open_arguments() -> dict[str, Any]:
     }
 
 
-@pytest.mark.parametrize("recover", [False, True])
+@pytest.mark.parametrize("flags", [
+    {}, {"confirm_recover_exited_process": True}, {"confirm_retry_preflight": True},
+])
 def test_host_open_available_without_native_generation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    recover: bool,
+    flags: dict[str, bool],
 ) -> None:
     profile = profile_at(tmp_path)
     monkeypatch.setattr(module, "read_active", lambda profile: None)
@@ -310,7 +312,7 @@ def test_host_open_available_without_native_generation(
             return {"native_connection_verified": True, "project": "verified"}
 
     server = ManagedMarkerServer(profile, project_opener=Opener(profile))
-    arguments = {**open_arguments(), "confirm_recover_exited_process": recover}
+    arguments = {**open_arguments(), **flags}
     result = asyncio.run(call_result(
         server, "resolve_free_open_project", arguments
     ))

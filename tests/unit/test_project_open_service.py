@@ -34,6 +34,9 @@ class UIError(RuntimeError):
         super().__init__("offline UI failure")
         self.uncertain = uncertain
         self.code = "SYNTHETIC_UI_FAILURE"
+        self.candidate_export_uncertain = False
+        self.view_changes_uncertain = False
+        self.diagnostics: dict[str, Any] = {}
 
 
 class Fixture:
@@ -224,6 +227,182 @@ class Fixture:
 @pytest.fixture
 def fixture(tmp_path: Path) -> Fixture:
     return Fixture(tmp_path)
+
+
+def rejected_window(fixture: Fixture) -> bytes:
+    error = UIError(False)
+    error.code = "WINDOW_UNAVAILABLE"
+    fixture.ui_error = error
+    with pytest.raises(ProjectOpenError, match="UI_OPEN_REJECTED"):
+        fixture.open()
+    fixture.ui_error = None
+    return fixture.receipt_path().read_bytes()
+
+
+def test_explicit_preflight_retry_keeps_key_history_and_never_repeats_completed_open(
+    fixture: Fixture,
+) -> None:
+    before = rejected_window(fixture)
+    with pytest.raises(ProjectOpenError, match="ORIGINAL_OPEN_REJECTED"):
+        fixture.open()
+    assert fixture.receipt_path().read_bytes() == before
+    result = fixture.open(confirm_retry_preflight=True)
+    assert result["context_verified"] and result["preflight_retried"]
+    assert result["recovered_after_process_exit"] is False
+    saved = json.loads(fixture.receipt_path().read_text())
+    assert saved["schema"] == 3
+    assert saved["previous_attempts"][0]["receipt_json"].encode() == before
+    assert fixture.startups == [] and len(fixture.opens) == 2
+    assert fixture.open(confirm_retry_preflight=True)["replayed"] is True
+    assert len(fixture.opens) == 2
+
+
+@pytest.mark.parametrize(
+    "state", ["other_project_open", "resolve_not_running", "modal_blocked"]
+)
+def test_preflight_retry_never_starts_or_switches_project(
+    fixture: Fixture, state: str
+) -> None:
+    before = rejected_window(fixture)
+    fixture.ui_state = state
+    with pytest.raises(ProjectOpenError, match="PREFLIGHT_MANAGER_UNVERIFIED"):
+        fixture.open(confirm_retry_preflight=True)
+    assert fixture.receipt_path().read_bytes() == before
+    assert fixture.startups == [] and len(fixture.opens) == 1
+
+
+def test_preflight_retry_rejects_replaced_process(fixture: Fixture) -> None:
+    before = rejected_window(fixture)
+    fixture.process["creation_time"] = "638999000000000001"
+    with pytest.raises(ProjectOpenError, match="PREFLIGHT_MANAGER_UNVERIFIED"):
+        fixture.open(confirm_retry_preflight=True)
+    assert fixture.receipt_path().read_bytes() == before
+    assert len(fixture.opens) == 1
+
+
+def test_legacy_window_refusal_can_resume_without_discarding_original(
+    fixture: Fixture,
+) -> None:
+    rejected_window(fixture)
+    path = fixture.receipt_path()
+    value = json.loads(path.read_text())
+    value.pop("preflight_failure")
+    atomic_json(path, value)
+    before = path.read_bytes()
+    fixture.open(confirm_retry_preflight=True)
+    saved = json.loads(path.read_text())
+    assert saved["previous_attempts"][0]["receipt_json"].encode() == before
+
+
+def test_window_refusal_with_uncertain_export_is_not_retryable(
+    fixture: Fixture,
+) -> None:
+    error = UIError(False)
+    error.code = "WINDOW_UNAVAILABLE"
+    error.candidate_export_uncertain = True
+    fixture.ui_error = error
+    with pytest.raises(ProjectOpenError):
+        fixture.open()
+    before = fixture.receipt_path().read_bytes()
+    with pytest.raises(ProjectOpenError, match="PREFLIGHT_RETRY_NOT_SAFE"):
+        fixture.open(confirm_retry_preflight=True)
+    assert fixture.receipt_path().read_bytes() == before and len(fixture.opens) == 1
+
+
+def test_repeated_preflight_refusal_keeps_each_failure_and_stage(
+    fixture: Fixture,
+) -> None:
+    first = rejected_window(fixture)
+    error = UIError(False)
+    error.code = "WINDOW_UNAVAILABLE"
+    error.diagnostics = {
+        "preflight_operation": "filter_candidate",
+        "stage": "context_window",
+    }
+    fixture.ui_error = error
+    with pytest.raises(ProjectOpenError, match="filter_candidate/context_window"):
+        fixture.open(confirm_retry_preflight=True)
+    second = json.loads(fixture.receipt_path().read_text())
+    assert second["preflight_failure"]["operation"] == "filter_candidate"
+    assert second["preflight_failure"]["project_open_requested"] is False
+    fixture.ui_error = None
+    fixture.open(confirm_retry_preflight=True)
+    saved = json.loads(fixture.receipt_path().read_text())
+    assert len(saved["previous_attempts"]) == 2
+    assert saved["previous_attempts"][0]["receipt_json"].encode() == first
+    snapshot = dict(second)
+    snapshot.pop("previous_attempts")
+    assert json.loads(saved["previous_attempts"][1]["receipt_json"]) == snapshot
+
+
+def test_preflight_history_rejects_repeated_uncertain_process(fixture: Fixture) -> None:
+    rejected_window(fixture)
+    fixture.open(confirm_retry_preflight=True)
+    saved = json.loads(fixture.receipt_path().read_text())
+    entry = saved["previous_attempts"][0]
+    prior = json.loads(entry["receipt_json"])
+    prior["status"] = "dispatch_started"
+    entry["receipt_json"] = json.dumps(prior)
+    entry["sha256"] = hashlib.sha256(entry["receipt_json"].encode()).hexdigest()
+    atomic_json(fixture.receipt_path(), saved)
+    with pytest.raises(ProjectOpenError, match="HOST_RECEIPT_INVALID"):
+        fixture.open(confirm_retry_preflight=True)
+    assert len(fixture.opens) == 2
+
+
+def test_preflight_flag_never_retries_unknown_rejection_or_pending_open(
+    fixture: Fixture,
+) -> None:
+    fixture.ui_error = UIError(False)
+    with pytest.raises(ProjectOpenError):
+        fixture.open()
+    before = fixture.receipt_path().read_bytes()
+    with pytest.raises(ProjectOpenError, match="PREFLIGHT_RETRY_NOT_SAFE"):
+        fixture.open(confirm_retry_preflight=True)
+    assert fixture.receipt_path().read_bytes() == before and len(fixture.opens) == 1
+
+
+def test_preflight_retry_preserves_exited_process_history(fixture: Fixture) -> None:
+    original = interrupted_open(fixture)
+    error = UIError(False)
+    error.code = "WINDOW_UNAVAILABLE"
+    fixture.ui_error = error
+    with pytest.raises(ProjectOpenError, match="UI_OPEN_REJECTED"):
+        fixture.open(confirm_recover_exited_process=True)
+    rejected = json.loads(fixture.receipt_path().read_text())
+    fixture.ui_error = None
+    fixture.bootstrap = True
+    result = fixture.open(confirm_retry_preflight=True)
+    saved = json.loads(fixture.receipt_path().read_text())
+    assert saved["previous_attempts"][0]["receipt_json"].encode() == original
+    snapshot = dict(rejected)
+    snapshot.pop("previous_attempts")
+    assert json.loads(saved["previous_attempts"][1]["receipt_json"]) == snapshot
+    assert result["recovered_after_process_exit"] and result["preflight_retried"]
+    assert len(fixture.opens) == 3 and len(fixture.startups) == 1
+
+
+def test_preflight_retry_does_not_touch_pending_open(fixture: Fixture) -> None:
+    interrupted_open(fixture)
+    before = fixture.receipt_path().read_bytes()
+    with pytest.raises(ProjectOpenError, match="PREFLIGHT_RETRY_REQUIRES_REJECTION"):
+        fixture.open(confirm_retry_preflight=True)
+    assert fixture.receipt_path().read_bytes() == before and len(fixture.opens) == 1
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        {"confirm_retry_preflight": 1},
+        {"confirm_retry_preflight": True, "confirm_recover_exited_process": True},
+    ],
+)
+def test_preflight_flag_requires_strict_explicit_mode(
+    fixture: Fixture, flags: dict[str, Any]
+) -> None:
+    with pytest.raises(ValueError):
+        fixture.open(**flags)
+    assert fixture.opens == []
 
 
 def test_opens_once_then_verifies_exact_native_context(fixture: Fixture) -> None:

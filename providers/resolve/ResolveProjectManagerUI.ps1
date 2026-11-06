@@ -249,6 +249,27 @@ public sealed class ProjectManagerDispatchState {
     public string Error="";
 }
 public static class ProjectManagerNative {
+    private delegate bool WindowCallback(IntPtr window, IntPtr data);
+    [DllImport("user32.dll",SetLastError=true)] private static extern bool EnumWindows(WindowCallback callback,IntPtr data);
+    [DllImport("user32.dll",CharSet=CharSet.Unicode)] private static extern int GetWindowText(IntPtr window,StringBuilder text,int size);
+    public static IntPtr[] ManagerHandles(uint expectedProcess) {
+        var handles=new System.Collections.Generic.List<IntPtr>();
+        int visited=0, owned=0; bool limit=false;
+        WindowCallback callback=delegate(IntPtr window,IntPtr data) {
+            if(++visited>4096){limit=true;return false;}
+            uint process;GetWindowThreadProcessId(window,out process);
+            if(process==expectedProcess){
+                if(++owned>64){limit=true;return false;}
+                var title=new StringBuilder(512);GetWindowText(window,title,title.Capacity);
+                if(title.ToString()=="Project Manager")handles.Add(window);
+            }
+            return true;
+        };
+        bool complete=EnumWindows(callback,IntPtr.Zero);
+        if(limit)throw new InvalidOperationException("PMUI_WINDOW_TREE_LIMIT");
+        if(!complete)throw new InvalidOperationException("PMUI_WINDOW_ENUMERATION_UNAVAILABLE");
+        return handles.ToArray();
+    }
     [DllImport("user32.dll",SetLastError=true)] private static extern IntPtr OpenInputDesktop(uint flags,bool inherit,uint access);
     [DllImport("user32.dll",CharSet=CharSet.Unicode)] private static extern bool GetUserObjectInformation(IntPtr obj,int index,StringBuilder value,uint length,out uint needed);
     [DllImport("user32.dll")] private static extern bool CloseDesktop(IntPtr desktop);
@@ -388,6 +409,33 @@ function Get-ProjectManagerRoots([long]$ProcessId) {
         [System.Windows.Automation.PropertyCondition]::new(
             [System.Windows.Automation.AutomationElement]::ProcessIdProperty,[int]$ProcessId)))
     if($roots.Count -gt 64){Fail-ProjectManager 'WINDOW_TREE_LIMIT'}
+    return @(Merge-ProjectManagerFallbackRoots $roots $ProcessId)
+}
+
+function Get-ProjectManagerNativeHandles([long]$ProcessId) {
+    return @([ProjectManagerNative]::ManagerHandles([uint32]$ProcessId))
+}
+
+function Get-ProjectManagerElementFromHandle([IntPtr]$Handle) {
+    return [System.Windows.Automation.AutomationElement]::FromHandle($Handle)
+}
+
+function Merge-ProjectManagerFallbackRoots($Roots,[long]$ProcessId) {
+    # Desktop UIA enumeration can omit a background owned Qt dialog. Win32
+    # captions are discovery hints only; Find-ProjectManager validates UIA
+    # process, class, automation id, control type and unique runtime identity.
+    $roots=@($Roots);$handles=@{}
+    foreach($root in $roots){$handles[[long]$root.Current.NativeWindowHandle]=$true}
+    foreach($handle in @(Get-ProjectManagerNativeHandles $ProcessId)){
+        if($handles.ContainsKey($handle.ToInt64())){continue}
+        $element=Get-ProjectManagerElementFromHandle $handle
+        if($null -eq $element -or $element.Current.ProcessId -ne $ProcessId -or
+            $element.Current.NativeWindowHandle -ne $handle.ToInt64()){
+            Fail-ProjectManager 'PROCESS_OR_WINDOW_CHANGED'
+        }
+        $roots+=,$element;$handles[$handle.ToInt64()]=$true
+        if($roots.Count -gt 64){Fail-ProjectManager 'WINDOW_TREE_LIMIT'}
+    }
     return $roots
 }
 
@@ -1191,7 +1239,13 @@ function Assert-ProjectManagerContext($Expected) {
     $manager=Find-ProjectManager $roots $Expected.pid
     if($null -eq $manager -or $manager.Current.IsOffscreen -or
         $manager.Current.NativeWindowHandle -ne $Expected.window_handle -or
-        $manager.Current.Name -cne $Expected.window_title){Fail-ProjectManager 'WINDOW_UNAVAILABLE'}
+        $manager.Current.Name -cne $Expected.window_title){
+        $script:OperationDiagnostics=@{stage='context_window';manager_found=($null -ne $manager);
+            expected_handle=[long]$Expected.window_handle;
+            observed_handle=if($null -eq $manager){0}else{[long]$manager.Current.NativeWindowHandle};
+            offscreen=if($null -eq $manager){$null}else{[bool]$manager.Current.IsOffscreen}}
+        Fail-ProjectManager 'WINDOW_UNAVAILABLE'
+    }
     $pattern=$null
     if($manager.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern,[ref]$pattern) -and
         $pattern.Current.WindowVisualState -eq [System.Windows.Automation.WindowVisualState]::Minimized){

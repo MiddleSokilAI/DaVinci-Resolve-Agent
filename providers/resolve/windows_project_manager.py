@@ -359,11 +359,10 @@ class WindowsProjectManagerAdapter:
             catalogue = verify_project_library_target(**arguments)
             self._phase_adapter(deadline).begin_candidate_search(process)
             self._phase_adapter(deadline).filter_candidate(process, **arguments)
-            self._phase_adapter(deadline).select_filtered_candidate(
-                process,
-                **arguments,
-                advance_once=True,
-            )
+            # Qt may expose no project rows or SelectionItemPattern. Never use
+            # focus/activation or Home/Down messages as a fallback in MCP Open.
+            # Probe the existing selection after the exact-name filter instead.
+            # Only its fresh exported UUID/name can authorize the final Open.
             saved = self._phase_adapter(deadline)._export_candidate(
                 process, destination=candidate
             )
