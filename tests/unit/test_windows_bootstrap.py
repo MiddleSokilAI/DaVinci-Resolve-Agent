@@ -1,7 +1,8 @@
 """Offline bootstrap boundary checks; no Resolve discovery or UI is performed.
 
 Subprocess adapter tests replace the driver entirely. PowerShell tests load only
-function definitions and use synthetic objects, never the executable entrypoint.
+function definitions, using synthetic objects or an owned hidden fixture window.
+They never run the driver entrypoint or discover a Resolve process.
 """
 
 from __future__ import annotations
@@ -576,6 +577,157 @@ def test_driver_parses_without_running_its_entrypoint() -> None:
     )
     assert result["errors"] == 0
     assert result["functions"] >= 15
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["hidden", "with-manager", "manager", "wrong-id", "title-only", "foreign",
+     "recycled",
+     "group", "duplicate", "ambiguous", "limit", "none", "desktop"],
+)
+def test_hidden_editor_discovery_is_read_only_and_binds_exact_handle(mode: str) -> None:
+    result = _offline_powershell(r"""
+        Add-Type -AssemblyName UIAutomationClient;
+        Add-Type -AssemblyName UIAutomationTypes;
+        $script:Mode=ConvertFrom-Json ([Console]::In.ReadToEnd());
+        $script:Conversions=0;
+        function New-HiddenEditor($Handle) {
+            $item=[pscustomobject]@{Current=[pscustomobject]@{
+                ProcessId=123;NativeWindowHandle=$Handle;
+                ClassName='UiMainWindowImp';AutomationId='UiMainWindow';
+                Name='DaVinci Resolve - Example';IsOffscreen=$false;
+                ControlType=[System.Windows.Automation.ControlType]::Window
+            }};
+            $item|Add-Member ScriptMethod GetRuntimeId {
+                return [int[]]@(42,$this.Current.NativeWindowHandle)
+            };
+            $item|Add-Member ScriptMethod FindAll {throw 'Unexpected subtree search'};
+            return $item
+        }
+        function Get-BootstrapDesktopRoots {
+            param($ProcessId)
+            if($script:Mode -ceq 'desktop') { return New-HiddenEditor 456 }
+        }
+        function Get-BootstrapWindowHandles {
+            param($ProcessId)
+            if($ProcessId -ne 123){throw 'Foreign process search'}
+            switch($script:Mode) {
+                'desktop' {throw 'Native fallback despite desktop editor'}
+                'duplicate' {return @(456,456)}
+                'with-manager' {return @(456,789)}
+                'ambiguous' {return @(456,789)}
+                'limit' {return @(1..65)}
+                'none' {return @()}
+                default {return @(456)}
+            }
+        }
+        function Get-BootstrapHandleElement {
+            param($Handle,$ProcessId)
+            $script:Conversions++;
+            $item=New-HiddenEditor $Handle;
+            if($script:Mode -ceq 'with-manager' -and $Handle -eq 789) {
+                $item.Current.ClassName='ProjectManager::UiProjectManagerDialogImp';
+                $item.Current.AutomationId='UiProjectManagerDialog';
+                $item.Current.Name='Project Manager'
+            }
+            switch($script:Mode) {
+                'manager' {
+                    $item.Current.ClassName='ProjectManager::UiProjectManagerDialogImp';
+                    $item.Current.AutomationId='UiProjectManagerDialog';
+                    $item.Current.Name='Project Manager'
+                }
+                'wrong-id' {$item.Current.AutomationId='Other'}
+                'title-only' {$item.Current.ClassName='QtWindow'}
+                'foreign' {$item.Current.ProcessId=999}
+                'recycled' {$item.Current.NativeWindowHandle=789}
+                'group' {
+                    $item.Current.ControlType=[System.Windows.Automation.ControlType]::Group
+                }
+            }
+            return $item
+        }
+        function Activate-BootstrapWindow {throw 'Foreground changed'}
+        function Expand-BootstrapMenu {throw 'Menu invoked during inspection'}
+        function Get-BootstrapWindowState {throw 'Window changed during discovery'}
+        # Desktop discovery retains its existing descendant traversal.
+        if($script:Mode -ceq 'desktop') {
+            function Get-BootstrapDesktopRoots {
+                param($ProcessId)
+                $item=New-HiddenEditor 456;
+                $item|Add-Member ScriptMethod FindAll {return @()} -Force;
+                return $item
+            }
+        }
+        $code=$null;$handle=$null;
+        try {
+            $main=Get-BootstrapMain 123;
+            if($null -ne $main){$handle=$main.Current.NativeWindowHandle}
+        } catch {$code=$_.Exception.Message}
+        @{handle=$handle;error=$code;conversions=$script:Conversions}|
+            ConvertTo-Json -Compress
+    """, mode)
+    errors = {
+        "foreign": "BSUI_WINDOW_IDENTITY_CHANGED",
+        "recycled": "BSUI_WINDOW_IDENTITY_CHANGED",
+        "ambiguous": "BSUI_MAIN_WINDOW_AMBIGUOUS",
+        "limit": "BSUI_WINDOW_TREE_LIMIT",
+    }
+    assert result["error"] == errors.get(mode)
+    assert result["handle"] == (
+        456 if mode in {"hidden", "with-manager", "duplicate", "desktop"} else None
+    )
+    if mode in {"limit", "none", "desktop"}:
+        assert result["conversions"] == 0
+    if mode == "duplicate":
+        assert result["conversions"] == 1
+
+
+def test_native_fallback_enumerates_owned_hidden_window_without_activating_it() -> None:
+    result = _offline_powershell(r"""
+        Initialize-BootstrapRuntime;
+        Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class HiddenBootstrapFixture {
+    [DllImport("user32.dll",CharSet=CharSet.Unicode)]
+    public static extern IntPtr CreateWindowEx(uint exStyle,string name,string title,
+        uint style,int x,int y,int w,int h,IntPtr parent,IntPtr menu,
+        IntPtr instance,IntPtr param);
+    [DllImport("user32.dll")] public static extern bool DestroyWindow(IntPtr handle);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr handle);
+}
+'@;
+        $before=[BootstrapNative]::GetForegroundWindow();
+        $handle=[HiddenBootstrapFixture]::CreateWindowEx(0,'STATIC',
+            'DaVinci Resolve - Bootstrap fixture',
+            0,0,0,1,1,[IntPtr]::Zero,[IntPtr]::Zero,[IntPtr]::Zero,[IntPtr]::Zero);
+        if($handle -eq [IntPtr]::Zero){throw 'Cannot create owned fixture window'}
+        try {
+            $owner=[Diagnostics.Process]::GetCurrentProcess().Id;
+            $handles=@(Get-BootstrapWindowHandles $owner);
+            $element=Get-BootstrapHandleElement $handle.ToInt64() $owner;
+            $editors=@(Get-BootstrapNativeEditors $owner);
+            $foreignRefused=$false;
+            try {$null=Get-BootstrapHandleElement $handle.ToInt64() ($owner+1)}
+            catch {
+                $message=$_.Exception.Message;
+                $foreignRefused=$message -match 'BSUI_WINDOW_IDENTITY_CHANGED'
+            }
+            $after=[BootstrapNative]::GetForegroundWindow();
+            @{found=($handles -contains $handle);
+                visible=[HiddenBootstrapFixture]::IsWindowVisible($handle);
+                exact=($element.Current.NativeWindowHandle -eq $handle.ToInt64());
+                foreign_refused=$foreignRefused;
+                caption_not_identity=($editors.Count -eq 0);
+                foreground_unchanged=($after -eq $before)}|
+                ConvertTo-Json -Compress
+        } finally {$null=[HiddenBootstrapFixture]::DestroyWindow($handle)}
+    """)
+    assert result == {
+        "found": True, "visible": False, "exact": True,
+        "foreign_refused": True, "foreground_unchanged": True,
+        "caption_not_identity": True,
+    }
 
 
 @pytest.mark.parametrize(
