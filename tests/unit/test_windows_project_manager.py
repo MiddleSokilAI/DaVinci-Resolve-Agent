@@ -201,7 +201,7 @@ def test_inspection_is_fixed_data_only_and_not_native_identity(
         "-NoLogo",
         "-NoProfile",
         "-NonInteractive",
-        "-STA",
+        "-MTA",
         "-ExecutionPolicy",
         "Bypass",
         "-File",
@@ -407,6 +407,7 @@ def test_export_dialog_inspection_never_repeats_export_or_claims_ownership(
         "project_open_requested": False,
         "windows_truncated": False,
         "pm_found": True,
+        "native_visible_handles": [456],
         "windows": [
             {
                 "handle": 456,
@@ -658,7 +659,7 @@ def _quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def _offline(script: str, payload: Any = None) -> Any:
+def _offline(script: str, payload: Any = None, *, apartment: str = "STA") -> Any:
     if POWERSHELL is None:
         pytest.skip("Windows PowerShell is required for offline driver tests")
     assert POWERSHELL is not None
@@ -681,6 +682,7 @@ def _offline(script: str, payload: Any = None) -> Any:
             "-NoLogo",
             "-NoProfile",
             "-NonInteractive",
+            "-" + apartment,
             "-EncodedCommand",
             encoded,
         ],
@@ -1202,6 +1204,118 @@ def test_background_export_dispatch_compiles_and_invokes_only_synthetic_pattern(
             ConvertTo-Json -Compress
     """)
     assert result == {"completed": True, "succeeded": True, "calls": 1}
+
+
+def test_export_pattern_creation_and_invocation_share_mta() -> None:
+    result = _offline(
+        r"""
+        Initialize-ProjectManagerRuntime
+        Add-Type 'public sealed class ApartmentPattern {
+            public static string Created;
+            public static string Invoked;
+            public ApartmentPattern(){
+                Created=System.Threading.Thread.CurrentThread
+                    .GetApartmentState().ToString();
+            }
+            public void Invoke(){
+                Invoked=System.Threading.Thread.CurrentThread.GetApartmentState().ToString();
+                if(Created!=Invoked)throw new System.InvalidOperationException(
+                    "Cross-apartment pattern");
+            }
+        }'
+        $pattern=[ApartmentPattern]::new()
+        $state=[ProjectManagerNative]::BeginInvoke($pattern)
+        $clock=[Diagnostics.Stopwatch]::StartNew()
+        while(-not $state.Completed -and $clock.Elapsed.TotalSeconds -lt 3){
+            [Threading.Thread]::Sleep(10)
+        }
+        @{created=[ApartmentPattern]::Created;invoked=[ApartmentPattern]::Invoked;
+          completed=$state.Completed;succeeded=$state.Succeeded}|
+            ConvertTo-Json -Compress
+    """,
+        apartment="MTA",
+    )
+    assert result == {
+        "created": "MTA",
+        "invoked": "MTA",
+        "completed": True,
+        "succeeded": True,
+    }
+
+
+@pytest.mark.parametrize(
+    "completed,succeeded", [(False, False), (False, True), (True, False), (True, True)]
+)
+def test_dispatch_diagnostic_requires_completion_barrier(
+    completed: bool, succeeded: bool
+) -> None:
+    result = _offline(
+        r"""
+        $data=ConvertFrom-Json ([Console]::In.ReadToEnd())
+        $state=[pscustomobject]@{
+            Completed=$data.completed;Succeeded=$data.succeeded;Error=''}
+        $pattern=[object]::new()
+        Get-ProjectManagerDispatchDiagnostics $state $pattern 'export_wait_dialog'|
+            ConvertTo-Json -Compress
+    """,
+        {"completed": completed, "succeeded": succeeded},
+    )
+    assert result["stage"] == "export_wait_dialog"
+    assert result["invoke_completed"] is completed
+    assert result["invoke_succeeded"] is (completed and succeeded)
+
+
+@pytest.mark.parametrize(
+    "handles", [None, [True], [0], [-1], [1.5], [456, 456], list(range(1, 66))]
+)
+def test_export_probe_rejects_malformed_native_visibility(
+    driver: tuple[list[dict[str, Any]], dict[str, Any]],
+    handles: Any,
+) -> None:
+    _, state = driver
+    state["result"] = {
+        "ok": True,
+        "operation": "inspect_export_dialog",
+        "backend": "windows_project_manager",
+        "state": "export_dialog_inspection",
+        "eligible": False,
+        "process": process(),
+        "project_state": "unverified",
+        "native_connection_verified": False,
+        "dispatch_started": False,
+        "project_open_requested": False,
+        "pm_found": True,
+        "windows_truncated": False,
+        "windows": [],
+        "native_visible_handles": handles,
+    }
+    with pytest.raises(WindowsProjectManagerError) as error:
+        WindowsProjectManagerAdapter(enabled=True).inspect_export_dialog(process())
+    assert error.value.code == "UNVERIFIED_RESPONSE"
+    assert not error.value.uncertain and not error.value.project_open_requested
+
+
+def test_native_dialog_omitted_by_desktop_uia_is_kept_in_fallback_roots() -> None:
+    result = _offline(r"""
+        function New-FakeRoot($handle,$name,$class) {
+            return [pscustomobject]@{Current=[pscustomobject]@{
+                NativeWindowHandle=$handle;ProcessId=123;Name=$name;ClassName=$class}}
+        }
+        $script:dialog=New-FakeRoot 999 'Export Project File' '#32770'
+        function Get-ProjectManagerNativeHandles {
+            param($value)return @([IntPtr]::new(456),[IntPtr]::new(999))
+        }
+        function Get-ProjectManagerElementFromHandle {
+            param($handle)return $script:dialog
+        }
+        $class='ProjectManager::UiProjectManagerDialogImp'
+        $manager=New-FakeRoot 456 'Project Manager' $class
+        $merged=@(Merge-ProjectManagerFallbackRoots @($manager) 123)
+        @{count=$merged.Count;handles=@($merged|ForEach-Object {
+            $_.Current.NativeWindowHandle})}|
+            ConvertTo-Json -Compress
+    """)
+    assert result == {"count": 2, "handles": [456, 999]}
 
 
 @pytest.mark.parametrize("advance_once", [False, True])

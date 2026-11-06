@@ -140,6 +140,10 @@ def test_catalogue_and_unverified_capabilities_do_not_bootstrap(
     async def scenario() -> None:
         tools = await server.list_tools()
         assert len(tools) == len({tool.name for tool in tools}) == 157
+        opener = next(
+            tool for tool in tools if tool.name == "resolve_free_open_project"
+        )
+        assert "confirm_reconcile_export_preflight" in opener.input_schema["properties"]
         for tool in tools:
             if tool.name in {
                 "resolve_prepare_render_job", "resolve_lua_prepare_render",

@@ -252,7 +252,14 @@ public static class ProjectManagerNative {
     private delegate bool WindowCallback(IntPtr window, IntPtr data);
     [DllImport("user32.dll",SetLastError=true)] private static extern bool EnumWindows(WindowCallback callback,IntPtr data);
     [DllImport("user32.dll",CharSet=CharSet.Unicode)] private static extern int GetWindowText(IntPtr window,StringBuilder text,int size);
+    [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr window);
     public static IntPtr[] ManagerHandles(uint expectedProcess) {
+        return EnumerateHandles(expectedProcess,true);
+    }
+    public static IntPtr[] VisibleWindowHandles(uint expectedProcess) {
+        return EnumerateHandles(expectedProcess,false);
+    }
+    private static IntPtr[] EnumerateHandles(uint expectedProcess,bool managerOnly) {
         var handles=new System.Collections.Generic.List<IntPtr>();
         int visited=0, owned=0; bool limit=false;
         WindowCallback callback=delegate(IntPtr window,IntPtr data) {
@@ -261,7 +268,8 @@ public static class ProjectManagerNative {
             if(process==expectedProcess){
                 if(++owned>64){limit=true;return false;}
                 var title=new StringBuilder(512);GetWindowText(window,title,title.Capacity);
-                if(title.ToString()=="Project Manager")handles.Add(window);
+                if(managerOnly ? title.ToString()=="Project Manager" : IsWindowVisible(window))
+                    handles.Add(window);
             }
             return true;
         };
@@ -413,7 +421,11 @@ function Get-ProjectManagerRoots([long]$ProcessId) {
 }
 
 function Get-ProjectManagerNativeHandles([long]$ProcessId) {
-    return @([ProjectManagerNative]::ManagerHandles([uint32]$ProcessId))
+    # Include visible owned dialogs omitted by the desktop UIA root as well as
+    # the Manager itself. Titles remain hints; every consumer checks UIA type,
+    # process/window identity and modal/export ownership independently.
+    return @([ProjectManagerNative]::ManagerHandles([uint32]$ProcessId))+
+        @([ProjectManagerNative]::VisibleWindowHandles([uint32]$ProcessId))
 }
 
 function Get-ProjectManagerElementFromHandle([IntPtr]$Handle) {
@@ -859,6 +871,16 @@ function Start-ProjectManagerExportInvoke($Pattern) {
     return [ProjectManagerNative]::BeginInvoke($Pattern)
 }
 
+function Get-ProjectManagerDispatchDiagnostics($Dispatch,$Pattern,[string]$Stage) {
+    # Read the volatile completion barrier first. Succeeded is not an ack while
+    # the worker is still executing, even if it changes during this snapshot.
+    $completed=[bool]$Dispatch.Completed
+    return @{stage=$Stage;invoke_completed=$completed;
+        invoke_succeeded=[bool]($completed -and $Dispatch.Succeeded);
+        invoke_error=(Limit-ProjectManagerText $Dispatch.Error 256);
+        pattern_type=(Limit-ProjectManagerText $Pattern.GetType().FullName 128)}
+}
+
 function Inspect-ProjectManagerExportDialog($Request) {
     if(-not [Environment]::UserInteractive -or -not [ProjectManagerNative]::InteractiveDesktop()){
         Fail-ProjectManager 'DESKTOP_UNAVAILABLE'
@@ -895,6 +917,8 @@ function Inspect-ProjectManagerExportDialog($Request) {
         state='export_dialog_inspection';eligible=$false;process=$Request.expected_process;
         project_state='unverified';native_connection_verified=$false;dispatch_started=$false;
         project_open_requested=$false;windows=@($records);windows_truncated=[bool]$truncated;
+        native_visible_handles=@([ProjectManagerNative]::VisibleWindowHandles(
+            [uint32]$Request.expected_process.pid)|ForEach-Object {$_.ToInt64()});
         pm_found=[bool]($null -ne $manager)}
 }
 
@@ -948,16 +972,12 @@ function Begin-ProjectManagerCandidateExport($Request,[bool]$IncludeTree=$true) 
             }
         }
         if($dispatch.Completed -and -not $dispatch.Succeeded){
-            $script:OperationDiagnostics=@{invoke_completed=[bool]$dispatch.Completed;
-                invoke_succeeded=[bool]$dispatch.Succeeded;invoke_error=(Limit-ProjectManagerText $dispatch.Error 256);
-                pattern_type=(Limit-ProjectManagerText $invoke.GetType().FullName 128)}
+            $script:OperationDiagnostics=Get-ProjectManagerDispatchDiagnostics $dispatch $invoke 'export_invoke'
             Fail-ProjectManager 'EXPORT_INVOKE_FAILED'
         }
         Start-Sleep -Milliseconds 100
     }
-    $script:OperationDiagnostics=@{invoke_completed=[bool]$dispatch.Completed;
-        invoke_succeeded=[bool]$dispatch.Succeeded;invoke_error=(Limit-ProjectManagerText $dispatch.Error 256);
-        pattern_type=(Limit-ProjectManagerText $invoke.GetType().FullName 128)}
+    $script:OperationDiagnostics=Get-ProjectManagerDispatchDiagnostics $dispatch $invoke 'export_wait_dialog'
     Fail-ProjectManager 'EXPORT_DIALOG_NOT_OBSERVED'
 }
 

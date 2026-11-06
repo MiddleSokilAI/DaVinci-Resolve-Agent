@@ -181,10 +181,13 @@ def claim_write_key(
     })
 
 
-def _error(code: str, detail: str, *, cause_code: str | None = None) -> CallToolResult:
-    evidence = {"code": code, "detail": detail}
+def _error(code: str, detail: str, *, cause_code: str | None = None,
+           preflight_failure: dict[str, Any] | None = None) -> CallToolResult:
+    evidence: dict[str, Any] = {"code": code, "detail": detail}
     if cause_code is not None:
         evidence["cause_code"] = cause_code
+    if preflight_failure is not None:
+        evidence["preflight_failure"] = preflight_failure
     return CallToolResult(
         content=[TextContent(type="text", text=f"{code}: {detail}")],
         structured_content=evidence,
@@ -278,6 +281,9 @@ class ManagedMarkerServer(MCPServer[Any]):
                 " No forced focus or key messages in this Open workflow."
                 " confirm_retry_preflight resumes a WINDOW_UNAVAILABLE rejection"
                 " only in its same verified Manager process, preserving history."
+                " Export preflight rejection additionally requires explicit"
+                " confirm_reconcile_export_preflight and a fresh dialog-free"
+                " Win32/UIA Manager check. No uncertain native Open is retried."
             ),
             input_schema={
                 "type": "object", "additionalProperties": False,
@@ -312,6 +318,15 @@ class ManagedMarkerServer(MCPServer[Any]):
                             "Retry only a rejected WINDOW_UNAVAILABLE preflight "
                             "on this same key and live Manager process. Never "
                             "resubmit an uncertain or completed native Open."
+                        ),
+                    },
+                    "confirm_reconcile_export_preflight": {
+                        "type": "boolean", "default": False,
+                        "description": (
+                            "Explicitly reconcile an EXPORT_DIALOG_NOT_OBSERVED "
+                            "preflight with proved no project Open; requires "
+                            "confirm_retry_preflight and the same live Manager "
+                            "with no visible native dialog. Retain all history."
                         ),
                     },
                     "timeout_seconds": {"type": "number", "minimum": 1,
@@ -356,6 +371,7 @@ class ManagedMarkerServer(MCPServer[Any]):
                 return _error(
                     error.code, str(error),
                     cause_code=cause if isinstance(cause, str) else None,
+                    preflight_failure=error.preflight_failure,
                 )
             except OperationBusy:
                 return _error(
@@ -453,7 +469,8 @@ class ManagedMarkerServer(MCPServer[Any]):
         except OriginalGenerationRequired as error:
             return _error("ORIGINAL_GENERATION_REQUIRED", str(error))
         except ProjectOpenError as error:
-            return _error(error.code, str(error), cause_code=error.cause_code)
+            return _error(error.code, str(error), cause_code=error.cause_code,
+                          preflight_failure=error.preflight_failure)
         except OperationBusy:
             return _error(
                 "OPERATION_BUSY",

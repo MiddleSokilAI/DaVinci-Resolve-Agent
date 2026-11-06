@@ -15,6 +15,7 @@ from mcp.server import MCPServer
 from mcp.types import CallToolResult, ToolAnnotations
 
 import mcp_server.managed_marker as module
+from mcp_server.automatic import AutomaticServer
 from mcp_server.managed_marker import ManagedMarkerServer
 from providers.resolve.lua_transport import LuaSnapshotClient
 from providers.resolve.marker_supervisor import OperationBusy, Profile, operation_lock
@@ -297,6 +298,7 @@ def open_arguments() -> dict[str, Any]:
 
 @pytest.mark.parametrize("flags", [
     {}, {"confirm_recover_exited_process": True}, {"confirm_retry_preflight": True},
+    {"confirm_retry_preflight": True, "confirm_reconcile_export_preflight": True},
 ])
 def test_host_open_available_without_native_generation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -335,6 +337,39 @@ def test_host_open_errors_are_structured(tmp_path: Path) -> None:
     ))
     assert result.is_error
     assert "AMBIGUOUS_PROJECT" in str(result.content)
+
+
+def test_auto_mcp_preserves_export_ack_in_error_and_accepts_reconciliation(
+    tmp_path: Path,
+) -> None:
+    failure = {
+        "operation": "export_candidate", "stage": "export_wait_dialog",
+        "project_open_requested": False, "candidate_export_uncertain": True,
+        "view_changes_uncertain": False,
+        "dispatch": {"invoke_completed": False, "invoke_succeeded": False},
+    }
+    profile = profile_at(tmp_path)
+    calls: list[dict[str, Any]] = []
+
+    class Opener(ProjectOpenService):
+        def open_existing(self, **arguments: Any) -> dict[str, Any]:
+            calls.append(arguments)
+            raise ProjectOpenError(
+                "UI_OPEN_REJECTED", cause_code="EXPORT_DIALOG_NOT_OBSERVED",
+                preflight_failure=failure,
+            )
+
+    server = AutomaticServer(profile, start_worker=False)
+    server.marker._project_opener = Opener(profile)
+    arguments = {
+        **open_arguments(), "confirm_retry_preflight": True,
+        "confirm_reconcile_export_preflight": True,
+    }
+    result = asyncio.run(server.call_tool("resolve_free_open_project", arguments))
+    assert result.is_error and calls == [arguments]
+    assert result.structured_content["preflight_failure"] == failure
+    assert "Invoke completed=false, succeeded=false" in str(result.content)
+    assert "export_candidate/export_wait_dialog" in str(result.content)
 
 
 @pytest.mark.parametrize("corrupt", [False, True])

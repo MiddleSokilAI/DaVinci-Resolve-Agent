@@ -865,7 +865,7 @@ class WindowsProjectManagerAdapter:
                     "-NoLogo",
                     "-NoProfile",
                     "-NonInteractive",
-                    "-STA",
+                    "-MTA",
                     "-ExecutionPolicy",
                     "Bypass",
                     "-File",
@@ -981,7 +981,13 @@ class WindowsProjectManagerAdapter:
                 "ownership_token",
             }
             if cancelling
-            else {"project_open_requested", "windows", "windows_truncated", "pm_found"}
+            else {
+                "project_open_requested",
+                "windows",
+                "windows_truncated",
+                "pm_found",
+                "native_visible_handles",
+            }
             if inspecting_export
             else {
                 "project_open_requested",
@@ -1226,6 +1232,14 @@ class WindowsProjectManagerAdapter:
                 or type(result["windows_truncated"]) is not bool
                 or not isinstance(result["windows"], list)
                 or len(result["windows"]) > 16
+                or not isinstance(result["native_visible_handles"], list)
+                or len(result["native_visible_handles"]) > 64
+                or any(
+                    type(item) is not int or item <= 0
+                    for item in result["native_visible_handles"]
+                )
+                or len(set(result["native_visible_handles"]))
+                != len(result["native_visible_handles"])
             ):
                 raise ValueError("Invalid export dialog inspection.")
             for window in result["windows"]:
