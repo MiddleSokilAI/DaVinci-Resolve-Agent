@@ -1133,11 +1133,11 @@ def test_export_begin_uses_only_export_and_accepts_one_new_owned_dialog(
         function Read-ProjectManagerExportSelection {
             param($manager,$pidValue)$script:SelectionReads++;
             if($script:Mode -ceq 'selection_unavailable'){
-                Fail-ProjectManager 'PROJECT_SELECTION_UNAVAILABLE'
+                return @{status='unavailable';project_name='Existing';runtime_id=@()}
             }
             $id=if($script:Mode -ceq 'selection_changed' -and
                 $script:SelectionReads -eq 2){999}else{42};
-            return @{project_name='Existing';runtime_id=@(42,$id)}
+            return @{status='verified';project_name='Existing';runtime_id=@(42,$id)}
         }
         function Find-ProjectManagerActionButton {
             param($manager,$action,$pidValue)
@@ -1192,14 +1192,14 @@ def test_export_begin_uses_only_export_and_accepts_one_new_owned_dialog(
         {"mode": mode, "process": process()},
     )
     before_invoke = mode in {
-        "selection_unavailable", "selection_changed", "input_before_invoke"
+        "selection_changed", "input_before_invoke"
     }
     assert result["clicks"] == (0 if before_invoke else 1)
     assert result["mode_checks"] == 1
     assert result["open_dispatched"] is False
     assert result["export_touched"] is (not before_invoke)
-    assert result["failed"] is (mode != "owned")
-    if mode == "owned":
+    assert result["failed"] is (mode not in {"owned", "selection_unavailable"})
+    if mode in {"owned", "selection_unavailable"}:
         assert result["evidence"]["project_open_requested"] is False
         assert result["evidence"]["dialog"]["handle"] == 789
 
@@ -1208,7 +1208,7 @@ def test_export_begin_uses_only_export_and_accepts_one_new_owned_dialog(
     "mode,expected",
     [
         ("selected", None),
-        ("bin_pattern_missing", "PROJECT_SELECTION_UNAVAILABLE"),
+        ("bin_pattern_missing", "unavailable"),
         ("empty", "PROJECT_SELECTION_REQUIRED"),
         ("multiple", "PROJECT_SELECTION_AMBIGUOUS"),
         ("wrong_name", "PROJECT_SELECTION_UNVERIFIED"),
@@ -1216,7 +1216,7 @@ def test_export_begin_uses_only_export_and_accepts_one_new_owned_dialog(
         ("disabled", "PROJECT_SELECTION_UNVERIFIED"),
         ("offscreen", "PROJECT_SELECTION_UNVERIFIED"),
         ("wrong_type", "PROJECT_SELECTION_UNVERIFIED"),
-        ("item_pattern_missing", "PROJECT_SELECTION_UNAVAILABLE"),
+        ("item_pattern_missing", "unavailable"),
         ("not_selected", "PROJECT_SELECTION_UNVERIFIED"),
         ("wrong_container", "PROJECT_SELECTION_UNVERIFIED"),
         ("invalid_runtime_id", "PROJECT_SELECTION_UNVERIFIED"),
@@ -1291,10 +1291,18 @@ def test_export_requires_readable_exact_selection_without_input(
     """,
         {"mode": mode},
     )
-    assert result["code"] == ("PMUI_" + expected if expected else None)
+    assert result["code"] == (
+        "PMUI_" + expected if expected not in {None, "unavailable"} else None
+    )
     assert result["stage"] == "export_selection"
     if expected is None:
-        assert result["proof"] == {"project_name": "Existing", "runtime_id": [42, 2]}
+        assert result["proof"] == {
+            "status": "verified", "project_name": "Existing", "runtime_id": [42, 2]
+        }
+    elif expected == "unavailable":
+        assert result["proof"] == {
+            "status": "unavailable", "project_name": "Existing", "runtime_id": []
+        }
     else:
         assert result["proof"] is None
 

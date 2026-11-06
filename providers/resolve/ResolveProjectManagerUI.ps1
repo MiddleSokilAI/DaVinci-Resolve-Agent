@@ -883,8 +883,8 @@ function Get-ProjectManagerDispatchDiagnostics($Dispatch,$Pattern,[string]$Stage
 
 function Read-ProjectManagerExportSelection($Manager,[long]$ProcessId) {
     # Filtering does not select a project. A successful Invoke can therefore be
-    # a no-op. Read a single exact selection before touching Export; never infer
-    # one from button enabled state, a search value or the on-disk catalogue.
+    # a no-op. Validate observable selection before touching Export. Unsupported
+    # selection is unknown, not empty: retain the existing DRP identity probe.
     $script:OperationDiagnostics=@{stage='export_selection'}
     $search=Read-ProjectManagerSearchState $Manager $ProcessId
     if([string]::IsNullOrWhiteSpace($search.Value)){
@@ -893,7 +893,7 @@ function Read-ProjectManagerExportSelection($Manager,[long]$ProcessId) {
     $bin=Find-ProjectManagerProjectBin $Manager $ProcessId
     $selection=$null
     if(-not $bin.TryGetCurrentPattern([System.Windows.Automation.SelectionPattern]::Pattern,[ref]$selection)){
-        Fail-ProjectManager 'PROJECT_SELECTION_UNAVAILABLE'
+        return @{status='unavailable';project_name=[string]$search.Value;runtime_id=@()}
     }
     $items=@($selection.Current.GetSelection())
     if($items.Count -eq 0){Fail-ProjectManager 'PROJECT_SELECTION_REQUIRED'}
@@ -905,7 +905,7 @@ function Read-ProjectManagerExportSelection($Manager,[long]$ProcessId) {
         $current.Name -cne $search.Value){Fail-ProjectManager 'PROJECT_SELECTION_UNVERIFIED'}
     $pattern=$null
     if(-not $item.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern,[ref]$pattern)){
-        Fail-ProjectManager 'PROJECT_SELECTION_UNAVAILABLE'
+        return @{status='unavailable';project_name=[string]$search.Value;runtime_id=@()}
     }
     $container=$pattern.Current.SelectionContainer
     if(-not $pattern.Current.IsSelected -or $null -eq $container -or
@@ -919,7 +919,7 @@ function Read-ProjectManagerExportSelection($Manager,[long]$ProcessId) {
     }
     if(($binId -join ':') -cne ($containerId -join ':') -or
         ($itemId -join ':') -ceq ($binId -join ':')){Fail-ProjectManager 'PROJECT_SELECTION_UNVERIFIED'}
-    return @{project_name=[string]$current.Name;runtime_id=@($itemId)}
+    return @{status='verified';project_name=[string]$current.Name;runtime_id=@($itemId)}
 }
 
 function Inspect-ProjectManagerExportDialog($Request) {
@@ -977,7 +977,7 @@ function Begin-ProjectManagerCandidateExport($Request,[bool]$IncludeTree=$true) 
     }
     $binding=Assert-ProjectManagerContext $Request.expected_process
     $fresh=Read-ProjectManagerExportSelection $binding.Manager $Request.expected_process.pid
-    if($fresh.project_name -cne $selected.project_name -or
+    if($fresh.status -cne $selected.status -or $fresh.project_name -cne $selected.project_name -or
         ($fresh.runtime_id -join ':') -cne ($selected.runtime_id -join ':')){
         Fail-ProjectManager 'PROJECT_SELECTION_CHANGED'
     }
@@ -1026,7 +1026,10 @@ function Begin-ProjectManagerCandidateExport($Request,[bool]$IncludeTree=$true) 
         }
         Start-Sleep -Milliseconds 100
     }
-    $script:OperationDiagnostics=Get-ProjectManagerDispatchDiagnostics $dispatch $invoke 'export_wait_dialog'
+    $stage=if($fresh.status -ceq 'unavailable'){
+        'export_wait_dialog_selection_unavailable'
+    }else{'export_wait_dialog'}
+    $script:OperationDiagnostics=Get-ProjectManagerDispatchDiagnostics $dispatch $invoke $stage
     Fail-ProjectManager 'EXPORT_DIALOG_NOT_OBSERVED'
 }
 

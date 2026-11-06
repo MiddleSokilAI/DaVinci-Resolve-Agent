@@ -479,7 +479,7 @@ def test_export_reconciliation_requires_explicit_consent_and_keeps_failure(
 
 
 @pytest.mark.parametrize("cause", [
-    "PROJECT_SELECTION_UNAVAILABLE", "PROJECT_SELECTION_REQUIRED",
+    "PROJECT_SELECTION_AMBIGUOUS", "PROJECT_SELECTION_REQUIRED",
     "PROJECT_SELECTION_UNVERIFIED", "PROJECT_SELECTION_CHANGED",
 ])
 def test_selection_refusal_retains_original_export_history_and_never_replays(
