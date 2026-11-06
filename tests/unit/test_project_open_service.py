@@ -73,6 +73,10 @@ class Fixture:
         }
         self.inspections = 0
         self.opens: list[dict[str, Any]] = []
+        self.accepted_opens = 0
+        self.export_inspections = 0
+        self.export_inspection_error: Exception | None = None
+        self.export_inspection_overrides: dict[str, Any] = {}
         self.native_calls: list[dict[str, Any]] = []
         self.ticks = 0
         self.bootstrap = True
@@ -124,8 +128,29 @@ class Fixture:
             self.held_lock.__enter__()
         if self.ui_error is not None:
             raise self.ui_error
+        self.accepted_opens += 1
         self.ui_state = "other_project_open"
         return {"state": "open_requested", "dispatch_started": True}
+
+    def inspect_export_dialog(self, process: dict[str, Any]) -> dict[str, Any]:
+        assert process == self.process
+        self.export_inspections += 1
+        if self.export_inspection_error is not None:
+            raise self.export_inspection_error
+        return {
+            "process": dict(process),
+            "pm_found": True,
+            "windows_truncated": False,
+            "native_visible_handles": [process["window_handle"]],
+            "windows": [
+                {
+                    "handle": process["window_handle"],
+                    "offscreen": False,
+                    "enabled": True,
+                }
+            ],
+            **self.export_inspection_overrides,
+        }
 
     def active(self) -> dict[str, Any]:
         return {
@@ -403,6 +428,280 @@ def test_preflight_flag_requires_strict_explicit_mode(
     with pytest.raises(ValueError):
         fixture.open(**flags)
     assert fixture.opens == []
+
+
+def rejected_export(fixture: Fixture) -> bytes:
+    error = UIError(False)
+    error.code = "EXPORT_DIALOG_NOT_OBSERVED"
+    error.candidate_export_uncertain = True
+    error.diagnostics = {
+        "preflight_operation": "export_candidate",
+        "stage": "export_wait_dialog",
+        "invoke_completed": True,
+        "invoke_succeeded": True,
+    }
+    fixture.ui_error = error
+    with pytest.raises(ProjectOpenError, match="UI_OPEN_REJECTED") as result:
+        fixture.open()
+    assert result.value.preflight_failure is not None
+    assert result.value.preflight_failure["dispatch"] == {
+        "invoke_completed": True,
+        "invoke_succeeded": True,
+    }
+    fixture.ui_error = None
+    return fixture.receipt_path().read_bytes()
+
+
+def test_export_reconciliation_requires_explicit_consent_and_keeps_failure(
+    fixture: Fixture,
+) -> None:
+    before = rejected_export(fixture)
+    with pytest.raises(ProjectOpenError, match="ORIGINAL_OPEN_REJECTED") as replay:
+        fixture.open()
+    assert replay.value.preflight_failure == json.loads(before)["preflight_failure"]
+    with pytest.raises(ProjectOpenError, match="PREFLIGHT_RETRY_NOT_SAFE"):
+        fixture.open(confirm_retry_preflight=True)
+    assert fixture.receipt_path().read_bytes() == before
+    assert fixture.export_inspections == fixture.accepted_opens == 0
+    result = fixture.open(
+        confirm_retry_preflight=True, confirm_reconcile_export_preflight=True
+    )
+    assert result["export_preflight_reconciled"] is True
+    assert result["native_connection_verified"] and fixture.accepted_opens == 1
+    saved = json.loads(fixture.receipt_path().read_text())
+    assert saved["schema"] == 4
+    assert saved["previous_attempts"][0]["receipt_json"].encode() == before
+    assert fixture.export_inspections == 1 and fixture.startups == []
+    assert fixture.open(
+        confirm_retry_preflight=True, confirm_reconcile_export_preflight=True
+    )["replayed"]
+    assert fixture.accepted_opens == 1 and fixture.export_inspections == 1
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"native_visible_handles": [456, 999]},  # Native dialog missing from UIA.
+        {"native_visible_handles": []},
+        {"windows_truncated": True},
+        {"pm_found": False},
+        {"windows": [{"handle": 456, "enabled": False, "offscreen": False}]},
+        {"windows": [{"handle": 456, "enabled": True, "offscreen": True}]},
+        {
+            "windows": [
+                {"handle": 456, "enabled": True, "offscreen": False},
+                {"handle": 999, "enabled": True, "offscreen": False},
+            ]
+        },
+    ],
+)
+def test_export_reconciliation_never_saves_or_cancels_existing_dialog(
+    fixture: Fixture,
+    override: dict[str, Any],
+) -> None:
+    before = rejected_export(fixture)
+    fixture.export_inspection_overrides = override
+    with pytest.raises(
+        ProjectOpenError, match="EXPORT_PREFLIGHT_DIALOG_REQUIRES_RECOVERY"
+    ):
+        fixture.open(
+            confirm_retry_preflight=True, confirm_reconcile_export_preflight=True
+        )
+    assert fixture.receipt_path().read_bytes() == before
+    assert len(fixture.opens) == 1 and fixture.accepted_opens == 0
+
+
+@pytest.mark.parametrize(
+    "state", ["resolve_not_running", "other_project_open", "modal_blocked"]
+)
+def test_export_reconciliation_never_launches_or_switches_project(
+    fixture: Fixture, state: str
+) -> None:
+    before = rejected_export(fixture)
+    fixture.ui_state = state
+    with pytest.raises(ProjectOpenError, match="PREFLIGHT_MANAGER_UNVERIFIED"):
+        fixture.open(
+            confirm_retry_preflight=True, confirm_reconcile_export_preflight=True
+        )
+    assert fixture.receipt_path().read_bytes() == before
+    assert fixture.accepted_opens == fixture.export_inspections == 0
+    assert fixture.startups == []
+
+
+def test_export_probe_failure_is_typed_and_preserves_receipt(fixture: Fixture) -> None:
+    before = rejected_export(fixture)
+    fixture.export_inspection_error = RuntimeError("Read-only probe unavailable")
+    with pytest.raises(
+        ProjectOpenError, match="EXPORT_PREFLIGHT_INSPECTION_UNAVAILABLE"
+    ):
+        fixture.open(
+            confirm_retry_preflight=True, confirm_reconcile_export_preflight=True
+        )
+    assert fixture.receipt_path().read_bytes() == before and fixture.accepted_opens == 0
+
+
+def test_export_reconciliation_preserves_prior_exit_and_preflight_history(
+    fixture: Fixture,
+) -> None:
+    original = interrupted_open(fixture)
+    error = UIError(False)
+    error.code = "WINDOW_UNAVAILABLE"
+    fixture.ui_error = error
+    with pytest.raises(ProjectOpenError, match="UI_OPEN_REJECTED"):
+        fixture.open(confirm_recover_exited_process=True)
+    second = json.loads(fixture.receipt_path().read_text())
+    error.code = "EXPORT_DIALOG_NOT_OBSERVED"
+    error.candidate_export_uncertain = True
+    error.diagnostics = {
+        "preflight_operation": "export_candidate",
+        "stage": "export_wait_dialog",
+    }
+    with pytest.raises(ProjectOpenError, match="UI_OPEN_REJECTED"):
+        fixture.open(confirm_retry_preflight=True)
+    third = json.loads(fixture.receipt_path().read_text())
+    fixture.ui_error = None
+    fixture.bootstrap = True
+    fixture.open(confirm_retry_preflight=True, confirm_reconcile_export_preflight=True)
+    saved = json.loads(fixture.receipt_path().read_text())
+    assert saved["schema"] == 4 and len(saved["previous_attempts"]) == 3
+    assert saved["previous_attempts"][0]["receipt_json"].encode() == original
+    for prior, entry in zip(
+        (second, third), saved["previous_attempts"][1:], strict=True
+    ):
+        assert json.loads(entry["receipt_json"]) == {
+            k: v for k, v in prior.items() if k != "previous_attempts"
+        }
+    assert (
+        fixture.accepted_opens == 2
+    )  # One original uncertain Open, one recovered Open.
+
+
+@pytest.mark.parametrize("fault", ["digest", "target", "pending_open", "ack"])
+def test_export_history_corruption_blocks_completed_replay(
+    fixture: Fixture, fault: str
+) -> None:
+    rejected_export(fixture)
+    fixture.open(confirm_retry_preflight=True, confirm_reconcile_export_preflight=True)
+    path = fixture.receipt_path()
+    saved = json.loads(path.read_text())
+    entry = saved["previous_attempts"][0]
+    if fault == "digest":
+        entry["sha256"] = "0" * 64
+    else:
+        prior = json.loads(entry["receipt_json"])
+        if fault == "target":
+            prior["arguments"]["project_name"] = "Another project"
+        elif fault == "pending_open":
+            prior["status"] = "dispatch_started"
+        else:
+            prior["preflight_failure"]["dispatch"]["invoke_completed"] = False
+        entry["receipt_json"] = json.dumps(prior)
+        entry["sha256"] = hashlib.sha256(entry["receipt_json"].encode()).hexdigest()
+    atomic_json(path, saved)
+    before = path.read_bytes()
+    with pytest.raises(ProjectOpenError, match="HOST_RECEIPT_INVALID"):
+        fixture.open()
+    assert path.read_bytes() == before
+    assert fixture.accepted_opens == fixture.export_inspections == 1
+
+
+def test_repeated_export_refusals_keep_bounded_flat_history(fixture: Fixture) -> None:
+    rejected_export(fixture)
+    error = UIError(False)
+    error.code = "EXPORT_DIALOG_NOT_OBSERVED"
+    error.candidate_export_uncertain = True
+    error.diagnostics = {"preflight_operation": "export_candidate"}
+    fixture.ui_error = error
+    for count in range(1, 9):
+        with pytest.raises(ProjectOpenError, match="UI_OPEN_REJECTED"):
+            fixture.open(
+                confirm_retry_preflight=True, confirm_reconcile_export_preflight=True
+            )
+        saved = json.loads(fixture.receipt_path().read_text())
+        assert saved["schema"] == 4 and len(saved["previous_attempts"]) == count
+        assert all(
+            "previous_attempts" not in json.loads(entry["receipt_json"])
+            for entry in saved["previous_attempts"]
+        )
+    before = fixture.receipt_path().read_bytes()
+    attempts = len(fixture.opens)
+    with pytest.raises(ProjectOpenError, match="RECOVERY_HISTORY_LIMIT"):
+        fixture.open(
+            confirm_retry_preflight=True, confirm_reconcile_export_preflight=True
+        )
+    assert fixture.receipt_path().read_bytes() == before
+    assert len(fixture.opens) == attempts and fixture.accepted_opens == 0
+
+
+@pytest.mark.parametrize(
+    "corrupt", ["open_requested", "native_binding", "operation", "cause"]
+)
+def test_export_reconciliation_refuses_missing_no_open_evidence(
+    fixture: Fixture, corrupt: str
+) -> None:
+    rejected_export(fixture)
+    value = json.loads(fixture.receipt_path().read_text())
+    if corrupt == "open_requested":
+        value["preflight_failure"]["project_open_requested"] = True
+    elif corrupt == "native_binding":
+        value["native_binding"] = {
+            "runtime": "other",
+            "session": "other",
+            "generation": "other",
+        }
+    elif corrupt == "operation":
+        value["preflight_failure"]["operation"] = "open_existing"
+    else:
+        value["cause_code"] = value["error"] = "UNKNOWN_FAILURE"
+    atomic_json(fixture.receipt_path(), value)
+    before = fixture.receipt_path().read_bytes()
+    with pytest.raises(ProjectOpenError):
+        fixture.open(
+            confirm_retry_preflight=True, confirm_reconcile_export_preflight=True
+        )
+    assert fixture.receipt_path().read_bytes() == before
+    assert fixture.accepted_opens == fixture.export_inspections == 0
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        {"confirm_reconcile_export_preflight": 1},
+        {"confirm_reconcile_export_preflight": True},
+        {
+            "confirm_reconcile_export_preflight": True,
+            "confirm_retry_preflight": True,
+            "confirm_recover_exited_process": True,
+        },
+    ],
+)
+def test_export_reconciliation_flags_are_strict(
+    fixture: Fixture, flags: dict[str, Any]
+) -> None:
+    with pytest.raises(ValueError):
+        fixture.open(**flags)
+    assert fixture.opens == [] and fixture.export_inspections == 0
+
+
+def test_export_flag_never_rearms_pending_native_open(fixture: Fixture) -> None:
+    interrupted_open(fixture)
+    before = fixture.receipt_path().read_bytes()
+    with pytest.raises(ProjectOpenError, match="PREFLIGHT_RETRY_REQUIRES_REJECTION"):
+        fixture.open(
+            confirm_retry_preflight=True, confirm_reconcile_export_preflight=True
+        )
+    assert fixture.receipt_path().read_bytes() == before
+    assert fixture.export_inspections == 0 and len(fixture.opens) == 1
+
+
+def test_incomplete_invoke_is_never_reported_as_success(fixture: Fixture) -> None:
+    error = UIError(False)
+    error.diagnostics = {"invoke_completed": False, "invoke_succeeded": True}
+    fixture.ui_error = error
+    with pytest.raises(ProjectOpenError):
+        fixture.open()
+    failure = json.loads(fixture.receipt_path().read_text())["preflight_failure"]
+    assert failure["dispatch"] == {"invoke_completed": False, "invoke_succeeded": False}
 
 
 def test_opens_once_then_verifies_exact_native_context(fixture: Fixture) -> None:

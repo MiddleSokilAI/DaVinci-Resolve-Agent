@@ -54,15 +54,34 @@ class ProjectOpenError(RuntimeError):
         uncertain: bool = False,
         cause_code: str | None = None,
         preflight_stage: str | None = None,
+        preflight_failure: dict[str, Any] | None = None,
     ) -> None:
         """Preserve the refusal cause across MCP and durable receipt replay."""
         self.code = code
         self.uncertain = uncertain
         self.cause_code = cause_code
+        self.preflight_failure = preflight_failure
+        if preflight_stage is None and preflight_failure is not None:
+            preflight_stage = "/".join(
+                str(preflight_failure.get(key, "unknown"))
+                for key in ("operation", "stage")
+            )
         cause = f" Cause: {cause_code}." if cause_code else ""
         stage = f" Preflight stage: {preflight_stage}." if preflight_stage else ""
+        dispatch = preflight_failure.get("dispatch") if preflight_failure else None
+        ack = (
+            f" Invoke completed={str(dispatch['invoke_completed']).lower()},"
+            f" succeeded={str(dispatch['invoke_succeeded']).lower()}."
+            if isinstance(dispatch, dict)
+            and all(
+                type(dispatch.get(key)) is bool
+                for key in ("invoke_completed", "invoke_succeeded")
+            )
+            else ""
+        )
         super().__init__(
-            f"Project opening: {code}.{cause}{stage} No Open action was resubmitted."
+            f"Project opening: {code}.{cause}{stage}{ack} "
+            "No Open action was resubmitted."
         )
 
 
@@ -146,12 +165,29 @@ def _attempt_history(path: Path, receipt: dict[str, Any]) -> list[dict[str, str]
     return previous
 
 
+def _export_preflight_rejection(value: dict[str, Any]) -> bool:
+    """Explicit no-Open evidence; the export outcome itself stays uncertain."""
+    failure = value.get("preflight_failure")
+    return (
+        value.get("status") == "rejected"
+        and value.get("native_binding") is None
+        and value.get("recovery_no_op", False) is False
+        and value.get("error")
+        == value.get("cause_code")
+        == "EXPORT_DIALOG_NOT_OBSERVED"
+        and isinstance(failure, dict)
+        and failure.get("operation") == "export_candidate"
+        and failure.get("project_open_requested") is False
+        and type(failure.get("candidate_export_uncertain")) is bool
+    )
+
+
 def _validate_receipt_value(value: Any, key_hash: str, *, history: bool = True) -> None:
     """Validate a live receipt and bounded, non-recursive prior-attempt snapshots."""
     if (
         not isinstance(value, dict)
         or type(value.get("schema")) is not int
-        or value["schema"] not in {1, 2, 3}
+        or value["schema"] not in {1, 2, 3, 4}
         or value.get("action") != "open_existing_project"
         or value.get("status") not in _STATUSES
         or value.get("key_hash") != key_hash
@@ -223,13 +259,22 @@ def _validate_receipt_value(value: Any, key_hash: str, *, history: bool = True) 
     failure = value.get("preflight_failure")
     if "preflight_failure" in value and (
         not isinstance(failure, dict)
-        or set(failure)
-        != {
+        or not {
             "operation",
             "stage",
             "project_open_requested",
             "candidate_export_uncertain",
             "view_changes_uncertain",
+        }
+        <= set(failure)
+        or set(failure)
+        - {
+            "operation",
+            "stage",
+            "project_open_requested",
+            "candidate_export_uncertain",
+            "view_changes_uncertain",
+            "dispatch",
         }
         or any(
             not isinstance(failure[key], str)
@@ -246,12 +291,27 @@ def _validate_receipt_value(value: Any, key_hash: str, *, history: bool = True) 
         )
     ):
         raise ValueError("Invalid preflight refusal evidence.")
+    if isinstance(failure, dict) and "dispatch" in failure:
+        dispatch = failure["dispatch"]
+        if (
+            not isinstance(dispatch, dict)
+            or set(dispatch) != {"invoke_completed", "invoke_succeeded"}
+            or any(type(item) is not bool for item in dispatch.values())
+            or dispatch["invoke_succeeded"]
+            and not dispatch["invoke_completed"]
+        ):
+            raise ValueError("Invalid export dispatch evidence.")
 
-    if value["schema"] in {2, 3}:
+    if value["schema"] in {2, 3, 4}:
         if type(value.get("recovery_no_op")) is not bool:
             raise ValueError("Recovery dispatch classification missing.")
-        if value["schema"] == 3 and value.get("preflight_retry") is not True:
+        if value["schema"] in {3, 4} and value.get("preflight_retry") is not True:
             raise ValueError("Preflight retry classification missing.")
+        if (
+            value["schema"] == 4
+            and value.get("export_preflight_reconciled") is not True
+        ):
+            raise ValueError("Export preflight reconciliation missing.")
         if history:
             previous = value.get("previous_attempts")
             if not isinstance(previous, list) or not 1 <= len(previous) <= 8:
@@ -284,17 +344,35 @@ def _validate_receipt_value(value: Any, key_hash: str, *, history: bool = True) 
                     prior["fingerprint"] != value["fingerprint"]
                     or prior["arguments"] != value["arguments"]
                     or prior["status"] not in _PENDING
-                    and not (value["schema"] == 3 and _retryable_preflight(prior))
+                    and not (
+                        value["schema"] in {3, 4}
+                        and _retryable_preflight(prior)
+                        or value["schema"] == 4
+                        and _export_preflight_rejection(prior)
+                    )
                 ):
                     raise ValueError("Prior attempt intent changed.")
                 snapshots.append(prior)
-            if value["schema"] == 3:
-                if not any(_retryable_preflight(prior) for prior in snapshots):
+            if value["schema"] in {3, 4}:
+                if not any(
+                    _retryable_preflight(prior)
+                    or value["schema"] == 4
+                    and _export_preflight_rejection(prior)
+                    for prior in snapshots
+                ):
                     raise ValueError("Preflight retry has no rejected original.")
+                if value["schema"] == 4 and not any(
+                    _export_preflight_rejection(prior) for prior in snapshots
+                ):
+                    raise ValueError("Export reconciliation has no original refusal.")
                 seen: dict[tuple[int, str, str], dict[str, Any]] = {}
                 for attempt in [*snapshots, value]:
                     token = _token(attempt["process"])
-                    if token in seen and not _retryable_preflight(seen[token]):
+                    if token in seen and not (
+                        _retryable_preflight(seen[token])
+                        or value["schema"] == 4
+                        and _export_preflight_rejection(seen[token])
+                    ):
                         raise ValueError("An uncertain process attempt cannot repeat.")
                     seen[token] = attempt
     elif "previous_attempts" in value or "recovery_no_op" in value:
@@ -497,7 +575,7 @@ class ProjectOpenService:
                 }
             }
             candidate.update(
-                schema=3 if receipt["schema"] == 3 else 2,
+                schema=receipt["schema"] if receipt["schema"] in {3, 4} else 2,
                 process=_saved_process(process),
                 native_binding=None,
                 status="prepared",
@@ -511,7 +589,12 @@ class ProjectOpenService:
             return candidate, ready
 
     def _retry_preflight(
-        self, path: Path, receipt: dict[str, Any], deadline: float
+        self,
+        path: Path,
+        receipt: dict[str, Any],
+        deadline: float,
+        *,
+        reconcile_export: bool = False,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Keep the original key and refusal; never retry a native Open.
 
@@ -520,7 +603,9 @@ class ProjectOpenService:
         Every later view/export/Open action independently rechecks its window.
         """
         with self._operation_until(deadline):
-            if not _retryable_preflight(receipt):
+            if reconcile_export and not _export_preflight_rejection(receipt):
+                raise ProjectOpenError("EXPORT_PREFLIGHT_RECONCILIATION_NOT_SAFE")
+            if not reconcile_export and not _retryable_preflight(receipt):
                 raise ProjectOpenError("PREFLIGHT_RETRY_NOT_SAFE")
             self._native_clear(receipt["key_hash"])
             if _receipt(path) != receipt:
@@ -534,18 +619,43 @@ class ProjectOpenService:
                 or _token(process) != _token(receipt["process"])
             ):
                 raise ProjectOpenError("PREFLIGHT_MANAGER_UNVERIFIED")
+            if reconcile_export:
+                try:
+                    inspection = self.adapter.inspect_export_dialog(process)
+                except (OSError, ValueError, RuntimeError) as error:
+                    raise ProjectOpenError(
+                        "EXPORT_PREFLIGHT_INSPECTION_UNAVAILABLE"
+                    ) from error
+                visible = [
+                    item for item in inspection["windows"] if not item["offscreen"]
+                ]
+                if (
+                    inspection["process"] != process
+                    or inspection["pm_found"] is not True
+                    or inspection["windows_truncated"] is not False
+                    or inspection["native_visible_handles"]
+                    != [process["window_handle"]]
+                    or len(visible) != 1
+                    or visible[0]["handle"] != process["window_handle"]
+                    or visible[0]["enabled"] is not True
+                ):
+                    raise ProjectOpenError("EXPORT_PREFLIGHT_DIALOG_REQUIRES_RECOVERY")
+            if _receipt(path) != receipt:
+                raise ProjectOpenError("ORIGINAL_RECEIPT_CHANGED", uncertain=True)
             candidate = {
                 key: value
                 for key, value in receipt.items()
                 if key not in {"error", "cause_code", "last_error", "preflight_failure"}
             }
             candidate.update(
-                schema=3,
+                schema=4 if reconcile_export or receipt["schema"] == 4 else 3,
                 status="prepared",
                 preflight_retry=True,
                 recovery_no_op=False,
                 previous_attempts=_attempt_history(path, receipt),
             )
+            if reconcile_export:
+                candidate["export_preflight_reconciled"] = True
             if (
                 len(json.dumps(candidate, ensure_ascii=False).encode("utf-8"))
                 > _MAX_RECEIPT_BYTES
@@ -727,7 +837,7 @@ class ProjectOpenService:
             "proof_scope": "fresh_native_context",
             "replayed": False,
         }
-        if receipt.get("schema") in {2, 3}:
+        if receipt.get("schema") in {2, 3, 4}:
             result["recovered_after_process_exit"] = any(
                 _token(json.loads(entry["receipt_json"].lstrip("\ufeff"))["process"])
                 != _token(receipt["process"])
@@ -735,6 +845,9 @@ class ProjectOpenService:
             )
             result["previous_attempt_count"] = len(receipt["previous_attempts"])
             result["preflight_retried"] = receipt.get("preflight_retry", False)
+            result["export_preflight_reconciled"] = receipt.get(
+                "export_preflight_reconciled", False
+            )
         receipt.update(
             status="completed", native_binding=self._binding(active), result=result
         )
@@ -834,6 +947,7 @@ class ProjectOpenService:
         confirm: bool = False,
         confirm_recover_exited_process: bool = False,
         confirm_retry_preflight: bool = False,
+        confirm_reconcile_export_preflight: bool = False,
         timeout_seconds: float = 120,
     ) -> dict[str, Any]:
         """Select once, then require native context; retries never repeat Open."""
@@ -845,6 +959,10 @@ class ProjectOpenService:
             raise ValueError("confirm_recover_exited_process must be a boolean.")
         if type(confirm_retry_preflight) is not bool:
             raise ValueError("confirm_retry_preflight must be a boolean.")
+        if type(confirm_reconcile_export_preflight) is not bool:
+            raise ValueError("confirm_reconcile_export_preflight must be a boolean.")
+        if confirm_reconcile_export_preflight and not confirm_retry_preflight:
+            raise ValueError("Export reconciliation requires explicit preflight retry.")
         if confirm_retry_preflight and confirm_recover_exited_process:
             raise ValueError("Choose one explicit recovery mode.")
         if folder_path is not None and (
@@ -908,6 +1026,7 @@ class ProjectOpenService:
                             raise ProjectOpenError(
                                 "ORIGINAL_OPEN_REJECTED",
                                 cause_code=receipt.get("cause_code", receipt["error"]),
+                                preflight_failure=receipt.get("preflight_failure"),
                             )
                     elif confirm_retry_preflight:
                         raise ProjectOpenError("PREFLIGHT_RETRY_REQUIRES_REJECTION")
@@ -924,7 +1043,12 @@ class ProjectOpenService:
             observation: dict[str, Any]
             if receipt is not None:
                 recovery = (
-                    self._retry_preflight(path, receipt, deadline)
+                    self._retry_preflight(
+                        path,
+                        receipt,
+                        deadline,
+                        reconcile_export=confirm_reconcile_export_preflight,
+                    )
                     if confirm_retry_preflight
                     else self._recover_exited(path, receipt, deadline)
                     if confirm_recover_exited_process
@@ -1037,6 +1161,15 @@ class ProjectOpenService:
                                 receipt["preflight_failure"][field],
                             ):
                                 receipt["preflight_failure"][field] = "unknown"
+                        if all(
+                            type(diagnostics.get(key)) is bool
+                            for key in ("invoke_completed", "invoke_succeeded")
+                        ):
+                            receipt["preflight_failure"]["dispatch"] = {
+                                "invoke_completed": diagnostics["invoke_completed"],
+                                "invoke_succeeded": diagnostics["invoke_completed"]
+                                and diagnostics["invoke_succeeded"],
+                            }
                     self._persist_rejected(path, receipt, deadline)
                     raise ProjectOpenError(
                         "UI_OPEN_REJECTED",
@@ -1045,6 +1178,7 @@ class ProjectOpenService:
                             receipt.get("preflight_failure", {}).get(key, "unknown")
                             for key in ("operation", "stage")
                         ),
+                        preflight_failure=receipt.get("preflight_failure"),
                     ) from error
                 receipt["last_error"] = str(
                     getattr(error, "code", type(error).__name__)
