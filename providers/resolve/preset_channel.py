@@ -93,6 +93,21 @@ class PresetSDKChannel:
             atomic_json(trace, record)
             return
 
+    @classmethod
+    def recover_expired_read(cls, root: Path, session: str) -> bool:
+        """Retire only a validated expired read; caller holds operation.lock.
+
+        This never exchanges a new RPC. Constructor validation retains the SDK
+        template/session and link fences; the original trace decides whether
+        the pending scope is read-only. Writes and live reads remain occupied.
+        """
+        inbox = root / "sdk-rpc/inbox"
+        if not inbox.exists() and not inbox.is_symlink():
+            return False
+        channel = cls(root, session, {})
+        channel._recover_expired_read()
+        return not inbox.exists() and not inbox.is_symlink()
+
     def exchange(self, payload: dict[str, Any]) -> dict[str, Any]:
         identity = uuid4().hex
         request = {"operation": self.operation, "call": payload}

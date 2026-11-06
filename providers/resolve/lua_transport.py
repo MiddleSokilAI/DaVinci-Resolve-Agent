@@ -31,6 +31,7 @@ from providers.resolve.lua_editing import (
     validate_edit,
 )
 from providers.resolve.lua_finishing import (
+    EMPTY_TIMELINE_FORMAT_CAPABILITY,
     EXPORT_DIRECTORY_CAPABILITY,
     FINISH_ACTIONS,
     validate_finishing,
@@ -159,6 +160,7 @@ def prepare(root: Path, media_roots: list[Path] | None = None) -> Path:
                     "quit_resolve", "create_project", "recording_api_v1",
                     PROJECT_CONTEXT_CAPABILITY,
                     EXPORT_DIRECTORY_CAPABILITY,
+                    EMPTY_TIMELINE_FORMAT_CAPABILITY,
                 ],
             }
         ),
@@ -329,6 +331,15 @@ class LuaSnapshotClient:
             )
         write = action in WRITE_ACTIONS | FINISH_ACTIONS
         recording_request = isinstance(arguments, dict) and "recording" in arguments
+        if (
+            action == "set_clip_properties" and isinstance(arguments, dict)
+            and "empty_timeline_resolution" in arguments
+            and EMPTY_TIMELINE_FORMAT_CAPABILITY not in self.capabilities
+        ):
+            raise ValueError(
+                "Timeline resolution requires a freshly prepared "
+                "empty_timeline_format_v1 native session; no request dispatched."
+            )
         if (
             action == "prepare_render" and isinstance(arguments, dict)
             and "output_directory" in arguments

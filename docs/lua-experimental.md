@@ -1,5 +1,8 @@
 # Experimental Lua MCP bridge (Resolve Free 21.1)
 
+See [empty timeline format](empty-timeline-format.md) for guarded 4K/60 setup
+and its native-session capability requirement.
+
 This is an opt-in **prototype**, separate from the Python bridge. Protocol 4
 adds live timeline summaries and fixed-module reload to protocol-3 finishing.
 It does not replace the production MCP server or expose its entire surface.

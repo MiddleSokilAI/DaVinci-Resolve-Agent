@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import struct
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 from zipfile import ZipFile
@@ -13,6 +15,7 @@ from zipfile import ZipFile
 import pytest
 
 from providers.resolve import marker_supervisor as module
+from providers.resolve.lua_editing import atomic_json
 from providers.resolve.marker_supervisor import (
     OperationBusy,
     Profile,
@@ -24,7 +27,9 @@ from providers.resolve.marker_supervisor import (
     read_status,
     runtime_history,
 )
-from providers.resolve.marker_transport import prepare_marker
+from providers.resolve.marker_transport import MarkerSlot, prepare_marker
+from providers.resolve.preset_channel import PresetSDKChannel
+from providers.resolve.preset_envelope import HEADER
 
 PROJECT = {"id": "native-project", "name": "Existing project"}
 
@@ -219,6 +224,49 @@ def test_waits_without_preparing_or_dispatching(setup: Any, state: str) -> None:
     assert read_active(profile) is None
     assert not list(profile.runtime_base.iterdir())
     assert adapter.invocations == native.calls == installs == []
+
+
+@pytest.mark.parametrize("scope", ["expired_read", "live_read", "write", "write_owner"])
+def test_rotation_recovers_only_expired_read_with_no_pending_write(
+    setup: Any, scope: str,
+) -> None:
+    profile, adapter, native, _, _ = setup
+    supervisor = watcher(setup)
+    supervisor.tick()
+    active = read_active(profile)
+    assert active is not None
+    root = Path(active["runtime"])
+    template_name = ("DRA_TEMPLATE_" + active["session"]).encode("utf-16be")
+    template = struct.pack(">II", 2, len(template_name)) + template_name + b"opaque"
+    (root / "sdk-template.preset").write_bytes(
+        HEADER + b"\n" + template.hex().encode()
+    )
+    channel = PresetSDKChannel(root, active["session"], {})
+    packet = {"session": active["session"], "id": "b" * 32, "action": "ping",
+              "expires": int(time.time()) + (600 if scope == "live_read" else -5)}
+    MarkerSlot(channel.packets, packet, 4096).publish(time.monotonic() + 5)
+    trace = channel.trace / ("c" * 32 + ".json")
+    record = {"session": active["session"], "message_id": packet["id"],
+              "packet": packet, "phase": "uncertain",
+              "operation": {"action": "create_timeline" if scope == "write"
+                            else "get_capabilities"}}
+    atomic_json(trace, record)
+    if scope == "write_owner":
+        owners = profile.state_directory / "sdk-write-owners"
+        owners.mkdir()
+        atomic_json(owners / ("a" * 64 + ".json"), {"phase": "uncertain"})
+    before = len(adapter.invocations), len(native.calls)
+    with operation_lock(profile):
+        if scope == "expired_read":
+            assert supervisor._audit_rotation() == [root]
+        else:
+            with pytest.raises(SupervisorError, match="PREVIOUS_SDK"):
+                supervisor._audit_rotation()
+    assert (channel.packets / "inbox").exists() is (scope != "expired_read")
+    assert json.loads(trace.read_text()) == (
+        {**record, "phase": "expired_read"} if scope == "expired_read" else record
+    )
+    assert before == (len(adapter.invocations), len(native.calls))
 
 
 def test_disabled_profile_never_inspects_ui(setup: Any) -> None:

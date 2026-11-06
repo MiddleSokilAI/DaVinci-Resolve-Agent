@@ -428,6 +428,21 @@ class ManagedMarkerServer(MCPServer[Any]):
                         f"Watcher state is {active['phase']}; no native command sent.",
                     )
                 key = arguments.get("idempotency_key")
+                if (name == "resolve_lua_set_empty_timeline_fps"
+                        and arguments.get("resolution") is not None):
+                    from providers.resolve.lua_finishing import (
+                        EMPTY_TIMELINE_FORMAT_CAPABILITY,
+                    )
+                    from providers.resolve.lua_transport import LuaSnapshotClient
+
+                    if (EMPTY_TIMELINE_FORMAT_CAPABILITY
+                            not in LuaSnapshotClient(root).capabilities):
+                        return _error(
+                            "NATIVE_SESSION_UPGRADE_REQUIRED",
+                            "Resolution requires a freshly prepared "
+                            "empty_timeline_format_v1 native session. "
+                            "No write key claimed or native request dispatched.",
+                        )
                 annotations = definitions[name].annotations
                 is_write = annotations is None or annotations.read_only_hint is not True
                 if is_write:
