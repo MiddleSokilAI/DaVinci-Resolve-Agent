@@ -686,6 +686,14 @@ class ProjectOpenService:
 
     def _native_clear(self, key_hash: str) -> None:
         from providers.resolve.project_create_service import pending_project_creation
+        from providers.resolve.render_process_recovery import (
+            recover_exited_render_starts,
+        )
+
+        try:
+            recover_exited_render_starts(self.profile)
+        except (OSError, ValueError, RuntimeError, KeyError, TypeError) as error:
+            raise ProjectOpenError("NATIVE_OPERATION_REQUIRES_RECOVERY") from error
 
         if pending_project_creation(self.profile):
             raise ProjectOpenError("PROJECT_CREATION_REQUIRES_RECOVERY", uncertain=True)

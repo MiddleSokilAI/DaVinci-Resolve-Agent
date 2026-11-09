@@ -477,6 +477,11 @@ class Supervisor:
 
     def _audit_rotation(self) -> list[Path]:
         """Retire validated expired reads; preserve all uncertain write fences."""
+        from providers.resolve.render_process_recovery import (
+            recover_exited_render_starts,
+        )
+
+        recover_exited_render_starts(self.profile)
         for path in (self.profile.state_directory / "sdk-write-owners").glob("*.json"):
             if path.is_symlink() or path.stat().st_size > 4 * 1024 * 1024:
                 raise SupervisorError("INVALID_SDK_WRITE_RECORD")

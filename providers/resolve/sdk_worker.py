@@ -216,6 +216,18 @@ class SDKWorker:
 
     def process(self, path: Path) -> None:
         command = bridge.validate_command(json.loads(path.read_text(encoding="utf-8")))
+        from providers.resolve.render_process_recovery import (
+            recover_exited_render_starts,
+            replay_exited_render,
+        )
+
+        with wait_operation(self.profile, self.profile.startup_timeout_seconds):
+            recover_exited_render_starts(self.profile)
+            retired = replay_exited_render(self.profile, command)
+            if retired is not None:
+                atomic_json(self.directories["responses"] / path.name, retired)
+                path.unlink()
+                return
         if command["action"] == "close_project":
             with wait_operation(self.profile, self.profile.startup_timeout_seconds):
                 if self._replay_close(path, command):
