@@ -284,4 +284,5 @@ def replay_exited_render(
         raise RuntimeError("SDK_IDEMPOTENCY_CONFLICT")
     if owner.get("phase") != "completed":
         raise RuntimeError("ORIGINAL_SDK_OPERATION_REQUIRES_RECOVERY")
-    return {**owner["response"], "command_id": command["command_id"]}
+    return {**owner["response"],
+            "command_id": command.get("command_id", owner["command_id"])}

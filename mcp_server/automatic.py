@@ -397,6 +397,31 @@ class AutomaticServer(MCPServer[Any]):
             structured_content=report,
         )
 
+    def _render_start_replay(self, arguments: dict[str, Any]) -> CallToolResult | None:
+        """Retired starts never reach readiness, which can open old projects."""
+        from providers.resolve.render_process_recovery import (
+            recover_exited_render_starts,
+            replay_exited_render,
+        )
+
+        with wait_operation(self.profile, 30):
+            recover_exited_render_starts(self.profile)
+            response = replay_exited_render(self.profile, {
+                "provider": "resolve", "action": "start_render_job",
+                "arguments": {"job_id": arguments["job_id"]},
+                "idempotency_key": arguments["idempotency_key"],
+            })
+        if response is None:
+            return None
+        error = response["error"]
+        result = _error(error["code"], error["message"])
+        assert result.structured_content is not None
+        result.structured_content.update(
+            **error["details"], historical=True, project_open_requested=False,
+            native_connection_verified=False,
+        )
+        return result
+
     async def call_tool(
         self,
         name: str,
@@ -432,6 +457,18 @@ class AutomaticServer(MCPServer[Any]):
             return await self._connection_status(arguments, context)
         if name == "resolve_create_project":
             return await self._create_project(arguments, context)
+        if name == "resolve_start_render_job" and arguments.get("idempotency_key"):
+            try:
+                replay = await _complete_work(asyncio.to_thread(
+                    self._render_start_replay, arguments
+                ))
+            except (OSError, ValueError, RuntimeError, KeyError, TypeError) as error:
+                code = ("SDK_IDEMPOTENCY_CONFLICT"
+                        if str(error) == "SDK_IDEMPOTENCY_CONFLICT"
+                        else "ORIGINAL_SDK_OPERATION_REQUIRES_RECOVERY")
+                return _error(code, str(error))
+            if replay is not None:
+                return replay
         primary = {tool.name for tool in await self.primary.list_tools()}
         native = (
             name in self.native_tools

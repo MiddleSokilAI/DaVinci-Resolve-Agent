@@ -220,6 +220,33 @@ def test_supervisor_rotation_accepts_only_retired_render(
     assert json.loads(owner_path.read_text())["phase"] == "completed"
 
 
+@pytest.mark.parametrize("job", ["owned-job", "different-job"])
+def test_actual_mcp_replay_precedes_readiness_and_never_opens_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, job: str,
+) -> None:
+    import asyncio
+
+    from mcp_server.automatic import AutomaticServer
+
+    worker, *_ = fixture(tmp_path, monkeypatch)
+    server = AutomaticServer(worker.profile, start_worker=False)
+
+    async def forbidden() -> None:
+        pytest.fail("Historical render key reached readiness/project opening")
+
+    monkeypatch.setattr(server, "_ready", forbidden)
+    response = asyncio.run(server.call_tool("resolve_start_render_job", {
+        "job_id": job, "idempotency_key": "original-start",
+    }))
+    assert response.is_error
+    expected = ("ORIGINAL_RENDER_PROCESS_EXITED" if job == "owned-job"
+                else "SDK_IDEMPOTENCY_CONFLICT")
+    assert response.structured_content["code"] == expected
+    if job == "owned-job":
+        assert response.structured_content["project_open_requested"] is False
+        assert response.structured_content["native_outcome"] == "unknown"
+
+
 @pytest.mark.parametrize("state", ["absent", "denied", "live", "reused", "exited",
     "times_failed", "exit_failed", "absent_but_listed", "enum_failed"])
 def test_os_exit_probe_never_treats_denied_or_failed_queries_as_exit(
