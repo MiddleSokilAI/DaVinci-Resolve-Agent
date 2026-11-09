@@ -142,7 +142,8 @@ def _retire(profile: Profile, path: Path, owner: dict[str, Any]) -> None:
     _guard(command_path)
     if not command_path.exists():
         return  # Prepared/crashed writes without a failed command stay fenced.
-    command = bridge.validate_command(_read(command_path))
+    # Historical validation only: this command is never dispatched again.
+    command = bridge.validate_command(_read(command_path), allow_expired=True)
     if command["action"] != "start_render_job":
         return  # Other uncertain writes remain fenced by their owning recovery.
     if (hashlib.sha256(command["idempotency_key"].encode()).hexdigest() != key

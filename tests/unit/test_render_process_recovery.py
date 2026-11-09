@@ -24,6 +24,9 @@ def fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     root = Path(active["runtime"])
     path = queued(worker, "start_render_job", {"job_id": "owned-job"}, "original-start")
     command = json.loads(path.read_text())
+    command.update(created_at="2020-01-01T00:00:00Z",
+                   expires_at="2020-01-01T00:01:00Z")
+    atomic_json(path, command)
     identity = UUID(command["command_id"]).hex
     fingerprint = bridge._request_fingerprint(command)
     key = hashlib.sha256(b"original-start").hexdigest()
